@@ -19,7 +19,7 @@ _ERROR_RE = re.compile(
 )
 
 # 元工具不参与循环计数（plan 更新 / ask_user 重复调用是正常行为）
-_META_TOOLS = {"plan", "ask_user"}
+_META_TOOLS = {"plan", "ask_user", "attempt_completion"}
 
 
 class LoopGuard:

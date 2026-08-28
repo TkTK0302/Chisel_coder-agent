@@ -40,10 +40,12 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 from core.runtime import build_runtime
+import core.completion  # noqa: F401  （注册 attempt_completion 工具）
 import env.terminal  # noqa: F401  （import 副作用：注册 terminal 工具）
 import gitops  # noqa: F401  （注册 git 工具）
 import perception.ast_index  # noqa: F401  （注册 code_navigate 工具）
 import perception.web  # noqa: F401  （注册 web_fetch 工具）
+import perception.web_search  # noqa: F401  （注册 web_search 工具）
 import rag.hybrid  # noqa: F401  （注册 rag_search 工具）
 from llm import LLMClient
 from memory import add_memory, load_memory
@@ -54,6 +56,8 @@ from tools import all_tools, available_tool_names, execute_tool
 SYSTEM_PROMPT = """你是一个编程智能体（coding agent），在一个工作目录里自主完成用户交给你的编程任务。
 
 {env}
+
+{repo_map}
 
 你可以反复调用以下工具，直到任务完成：
 - bash：执行 shell 命令（ls 看目录、cat 看文件、grep 搜索、python 运行代码、git 等）
@@ -95,6 +99,8 @@ def _tool_hints() -> str:
         hints.append("- 查函数/类定义、引用位置用 code_navigate。")
     if "web_fetch" in names:
         hints.append("- 需要查最新文档/API 说明时用 web_fetch 抓取网页。")
+    if "web_search" in names:
+        hints.append("- 需要搜索最新资料或 Stack Overflow 时用 web_search。")
     if "terminal" in names:
         hints.append("- 长驻进程（如 web server）用 terminal 启动；短命令用 bash。")
     if "git" in names:
@@ -105,9 +111,12 @@ def _tool_hints() -> str:
 def build_system_prompt(workspace: str) -> str:
     memory = load_memory(workspace)
     memory_section = f"用户的长期偏好（来自 MEMORY.md，请遵守）：\n{memory}\n" if memory else ""
+    from perception.repo_map import get_repo_map
+    repo_map = get_repo_map(workspace)
     return SYSTEM_PROMPT.format(
         memory_section=memory_section,
         env=_env_facts(),
+        repo_map=repo_map,
         tool_hints=_tool_hints(),
     )
 
@@ -202,12 +211,19 @@ class Agent:
                     # 可见性：把执行结果也打出来，便于观察 agent 每一步在干什么
                     print(f"   ↳ {result[:500]}")
 
-                # 死循环 / 连续错误追踪
-                if name != "plan":
+                # 死循环 / 连续错误追踪（元工具不参与计数）
+                if name not in ("plan", "attempt_completion"):
                     ctx.loop.note_call(name, args)
                 ctx.mistake.track(result)
                 # 长结果截断后再回填，防止报错日志挤爆上下文
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": ctx.context.truncate_output(result)})
+
+            # ---- 检测 attempt_completion（显式完成信号） ----
+            if getattr(ctx, "_completion_result", None):
+                final = ctx._completion_result
+                print(f"\n{'='*60}\n✅ 任务完成（共 {step} 步）\n{'='*60}\n{final}\n")
+                self._cleanup(ctx)
+                return final
 
             # ---- 上下文管理：超限时整组压缩（确定性折叠 + 必要时 LLM 摘要） ----
             ctx.context.compress_context(
