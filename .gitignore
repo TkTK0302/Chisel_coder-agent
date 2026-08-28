@@ -1,0 +1,10 @@
+# 凭据（绝不入库）
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# 测试/演示产生的工作目录
+test_workspace/
+demo_workspace/
