@@ -14,7 +14,11 @@ WEB_SCHEMA = {
     "type": "function",
     "function": {
         "name": "web_fetch",
-        "description": "抓取一个网页并提取正文与链接，用于查阅文档、示例或 API 说明。",
+        "description": "Fetch a web page and extract its readable text content and links. "
+                       "Use this to look up documentation, API references, or examples. "
+                       "Extracts the main body text, stripping scripts, styles, and navigation. "
+                       "Returns up to 8000 characters of text, along with up to 10 page links. "
+                       "For web search, use the web_search tool instead.",
         "parameters": {
             "type": "object",
             "properties": {

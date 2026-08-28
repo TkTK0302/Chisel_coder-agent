@@ -16,8 +16,11 @@ WEB_SEARCH_SCHEMA = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "在网上搜索，获取最新的文档、教程或 Stack Overflow 答案。"
-                       "当你不确定某个 API 的用法或需要查找资料时使用。",
+        "description": "Search the web for recent information, documentation, or solutions to technical problems. "
+                       "Uses DuckDuckGo (free, no API key needed). "
+                       "When you're unsure about an API, a library's behavior, or need the latest information, "
+                       "search the web rather than relying on training data which may be outdated. "
+                       "Returns result titles, URLs, and brief snippets.",
         "parameters": {
             "type": "object",
             "properties": {

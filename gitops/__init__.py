@@ -23,9 +23,14 @@ GIT_SCHEMA = {
     "type": "function",
     "function": {
         "name": "git",
-        "description": "Git 操作。status 查看改动；diff 查看未提交的改动（可限定文件）；"
-                       "commit 用给定 message 提交；undo 撤销最近 N 次本会话产生的提交（安全回滚，"
-                       "不会动用户自己的提交）。",
+        "description": "Perform Git operations on the workspace repository. "
+                       "status: show the working tree (modified, staged, untracked files). "
+                       "commit: stage all changes and commit with a message. "
+                       "diff: show unstaged and staged diffs, optionally limited to a path. "
+                       "undo: safely revert the last N agent-generated commits (only reverts changes "
+                       "made during this session, protecting your own commits from accidental rollback). "
+                       "The tool automatically creates snapshot commits before write/edit operations, "
+                       "so you can always undo changes that went wrong.",
         "parameters": {
             "type": "object",
             "properties": {

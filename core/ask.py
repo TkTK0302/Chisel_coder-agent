@@ -12,8 +12,11 @@ ASK_SCHEMA = {
     "type": "function",
     "function": {
         "name": "ask_user",
-        "description": "任务信息不足或存在歧义时，向用户提问澄清需求。仅在交互模式可用；"
-                       "非交互模式会返回提示，此时请基于已有信息做出合理假设后继续。",
+        "description": "Ask the user a question when you need clarification or additional information. "
+                       "Use this when the task requirements are ambiguous, when you need to choose "
+                       "between approaches, or when required information (API keys, preferences) is missing. "
+                       "Only available in interactive mode; in non-interactive mode, make a reasonable "
+                       "assumption and document it in the final summary.",
         "parameters": {
             "type": "object",
             "properties": {

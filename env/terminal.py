@@ -20,8 +20,12 @@ TERMINAL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "terminal",
-        "description": "启动/查看/终止一个长期运行或交互式进程（如 web server、长编译）。"
-                       "短命令请用 bash。每个终端用 name 区分，可同时运行多个。",
+        "description": "Start, stream, or terminate a long-running process (e.g., a web server, background compilation). "
+                       "Use this tool instead of bash for processes that need to stay alive. "
+                       "Each terminal is identified by a name; you can have multiple terminals running simultaneously. "
+                       "action=start launches a new process; action=stream reads recent output; "
+                       "action=kill terminates the process. "
+                       "For short-lived commands, use bash instead.",
         "parameters": {
             "type": "object",
             "properties": {

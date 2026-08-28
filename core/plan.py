@@ -90,8 +90,12 @@ PLAN_SCHEMA = {
     "type": "function",
     "function": {
         "name": "plan",
-        "description": "维护子任务清单。任务开始时先调用一次 action=create 把任务拆成子任务；"
-                       "每完成一步用 action=update 更新状态。当前计划会自动注入你的上下文，无需手动读取。",
+        "description": "Create or update a task breakdown for the current assignment. "
+                       "Call action=create at the start of a task to decompose it into "
+                       "manageable subtasks, each with a unique id, description, and status. "
+                       "Update the status of tasks as you progress using action=update. "
+                       "The current plan is automatically injected into your context at the "
+                       "start of each step, so you can always see what's been done and what remains.",
         "parameters": {
             "type": "object",
             "properties": {

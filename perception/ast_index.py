@@ -19,9 +19,13 @@ NAV_SCHEMA = {
     "type": "function",
     "function": {
         "name": "code_navigate",
-        "description": "基于 AST 的代码导航。definition 查符号定义（文件+行号+签名+代码段）；"
-                       "references 查符号的引用位置；symbols 列文件/项目的函数与类概览。"
-                       "非 Python 文件自动用 grep 兜底。",
+        "description": "Navigate the codebase using Python AST analysis and grep fallback. "
+                       "definition: find where a function or class is defined (file path, line number, signature). "
+                       "references: find all usages of a symbol across the codebase. "
+                       "symbols: list all functions and classes in the project, optionally filtered by file or name. "
+                       "For Python files, uses AST parsing for accurate results; for other files, "
+                       "falls back to word-boundary grep. "
+                       "Call this tool in the same response as other independent tool calls.",
         "parameters": {
             "type": "object",
             "properties": {

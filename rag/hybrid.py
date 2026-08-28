@@ -16,14 +16,18 @@ RAG_SCHEMA = {
     "type": "function",
     "function": {
         "name": "rag_search",
-        "description": "在项目代码库中检索与查询相关的代码片段。离线用 BM25 关键词检索；"
-                       "配置了 embedding 端点时自动叠加向量语义检索（RRF 融合）。"
-                       "用于快速定位相关代码，比逐个 grep 更高效。",
+        "description": "Search the project codebase for code snippets relevant to your query. "
+                       "Uses BM25 keyword search (always available, offline) and vector semantic search "
+                       "(if an embedding endpoint is configured). "
+                       "Use this to locate relevant code before reading or editing, instead of blindly grepping. "
+                       "The index is built automatically from workspace files and updated on file changes. "
+                       "Returns the most relevant code snippets with file paths and line numbers.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "检索描述，如“计算闰年的函数”或“todo 的添加逻辑”"},
-                "top_k": {"type": "integer", "description": "返回片段数，默认 5"},
+                "query": {"type": "string", "description": "Search query describing the code you are looking for, "
+                                                           "e.g. 'leap year calculation function' or 'todo add logic'"},
+                "top_k": {"type": "integer", "description": "Number of snippets to return, default 5"},
             },
             "required": ["query"],
         },

@@ -13,8 +13,12 @@ COMPLETION_SCHEMA = {
     "type": "function",
     "function": {
         "name": "attempt_completion",
-        "description": "当你确定任务已完成时，调用此工具来声明完成并给出最终总结。"
-                       "调用此工具后，你将不再有机会调用任何工具。",
+        "description": "Signal that the task is complete and provide a final summary of what was done. "
+                       "Call this tool when you have verified that the task requirements are met "
+                       "(e.g., tests pass, code compiles, changes are correct). "
+                       "After calling this tool, no further tool calls will be possible in this task. "
+                       "Provide a detailed result describing what was accomplished, what changes were made, "
+                       "and any verification results (test output, fixes, etc.).",
         "parameters": {
             "type": "object",
             "properties": {

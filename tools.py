@@ -3,8 +3,7 @@
 设计来源：
   - 工具 schema 写法来自 Aider 的 editblock_func_coder.py 的 `functions`。
   - edit_file 的 SEARCH/REPLACE 精确匹配 + 只替换第一处，来自 Aider do_replace()；
-    本项目自写增强为多策略：精确 → 去空行 → `...` 省略 → 缩进容错，并带失败诊断
-    （参考 Aider 的缩进容错 / try_dotdotdots / find_similar_lines 思路）。
+    本项目自写增强为多策略：精确 → 去空行 → `...` 省略 → 缩进容错，并带失败诊断。
   - 危险命令确认来自 OpenHands confirmation mode。
 
 结构：
@@ -28,12 +27,16 @@ BASE_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "执行一条 shell 命令。用于查看目录(ls)、查看文件(cat)、"
-                           "搜索(grep/find)、运行代码(python)、git 等。命令在工作目录内执行。",
+            "description": "Execute a shell command. Use for running scripts, tests, compilation, file operations, "
+                           "and any command-line task. Short-lived commands run directly; for long-running "
+                           "processes like web servers, use the terminal tool instead. "
+                           "The command runs inside the workspace directory, in a Docker sandbox by default "
+                           "(safe isolation). Returns stdout, stderr, and the exit code. "
+                           "Output is truncated at ~3000 characters to save context.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "要执行的 shell 命令"},
+                    "command": {"type": "string", "description": "The shell command to execute"},
                 },
                 "required": ["command"],
             },
@@ -43,11 +46,15 @@ BASE_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "读取一个文本文件的内容。先 ls 看目录，再读具体文件。",
+            "description": "Read the content of a text file at the given path. Use this to inspect source code, "
+                           "configuration files, or any text file. When you know multiple files you need, "
+                           "read them together and call this tool in the same response as other independent "
+                           "tool calls. Returns the full file content or an error message if the file doesn't "
+                           "exist. Path is relative to the workspace directory; path traversal is blocked for security.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对工作目录的文件路径"},
+                    "path": {"type": "string", "description": "Path to the file, relative to the workspace directory"},
                 },
                 "required": ["path"],
             },
@@ -57,12 +64,15 @@ BASE_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "新建一个文件，或用给定内容整体覆盖一个文件。",
+            "description": "Create a new file or overwrite an existing file with the given content. "
+                           "Use this when creating a new file from scratch, or when a file needs a complete rewrite. "
+                           "For small, targeted changes, use edit_file instead — it's more precise and saves tokens. "
+                           "Parent directories are created automatically if they don't exist.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对工作目录的文件路径"},
-                    "content": {"type": "string", "description": "文件的完整内容"},
+                    "path": {"type": "string", "description": "Path to the file, relative to the workspace directory"},
+                    "content": {"type": "string", "description": "The complete new content of the file"},
                 },
                 "required": ["path", "content"],
             },
@@ -72,21 +82,27 @@ BASE_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "精确替换文件中的一段内容（SEARCH/REPLACE）。"
-                           "original_lines 必须与文件现有内容一致（含缩进），只替换第一处匹配。"
-                           "支持在 original_lines 中用独立的一行 \"...\" 表示省略中间代码。"
-                           "用于小范围修改，避免整文件重写。",
+            "description": "Apply a precise change to an existing file using SEARCH/REPLACE. "
+                           "The original_lines must exactly match the current file content, including all "
+                           "whitespace and indentation. Only the first occurrence is replaced. "
+                           "Supports '...' as a single line to elide intermediate code. "
+                           "For small, targeted changes; for large rewrites, use write_file instead. "
+                           "If the match fails, the tool tries fuzzy strategies (trim blank lines, elision, "
+                           "indent tolerance) and provides a diagnostic hint. "
+                           "If all strategies fail, read the file again to see the actual content. "
+                           "Returns a unified diff showing the change.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对工作目录的文件路径"},
+                    "path": {"type": "string", "description": "Path to the file, relative to the workspace directory"},
                     "original_lines": {
                         "type": "string",
-                        "description": "文件中要被替换的原始代码段（必须精确匹配；可用 ... 省略中间）",
+                        "description": "The exact stretch of code to replace. Must match the file content exactly. "
+                                       "Use '...' on a single line to indicate code you are omitting between surrounding lines.",
                     },
                     "updated_lines": {
                         "type": "string",
-                        "description": "替换后的新代码段",
+                        "description": "The new code to replace the original_lines with.",
                     },
                 },
                 "required": ["path", "original_lines", "updated_lines"],
@@ -162,9 +178,9 @@ def execute_tool(name: str, args: dict, workspace: str, ctx=None) -> str:
             return _edit_file(args["path"], args["original_lines"], args["updated_lines"], workspace, ctx)
         if ctx is not None and name in EXTRA_HANDLERS:
             return EXTRA_HANDLERS[name](ctx, args)
-        return f"未知工具: {name}"
+        return f"Unknown tool: {name}"
     except Exception as e:
-        return f"工具执行出错: {type(e).__name__}: {e}"
+        return f"Tool execution error: {type(e).__name__}: {e}"
 
 
 def _confirm_for(ctx):
@@ -179,7 +195,7 @@ def _resolve(workspace: str, path: str) -> Path:
     resolved = p.resolve()
     ws = Path(workspace).resolve()
     if not str(resolved).startswith(str(ws)):
-        raise ValueError(f"禁止访问工作目录之外: {path}")
+        raise ValueError(f"Access denied: path escapes workspace: {path}")
     return resolved
 
 
@@ -206,13 +222,13 @@ def _host_bash(command: str, workspace: str) -> str:
         parts.append(f"[exit code {proc.returncode}]")
         return "\n".join(parts)
     except subprocess.TimeoutExpired:
-        return "命令超时（120s），已终止。"
+        return "Command timed out (120s)."
 
 
 def _run_bash(command: str, workspace: str, ctx=None) -> str:
     # 危险命令先确认（OpenHands 的「执行前询问」思路）
     if is_dangerous(command) and not _confirm_for(ctx)(command):
-        return "用户取消了这条命令，未执行。"
+        return "User cancelled the command."
     # 有上下文时走沙盒（默认 auto：Docker 优先，失败降级宿主）
     if ctx is not None:
         return ctx.ensure_sandbox().run(command, workspace)
@@ -222,14 +238,14 @@ def _run_bash(command: str, workspace: str, ctx=None) -> str:
 def _read_file(path: str, workspace: str) -> str:
     p = _resolve(workspace, path)
     if not p.exists():
-        return f"文件不存在: {path}"
+        return f"File not found: {path}"
     if not p.is_file():
-        return f"不是文件: {path}"
+        return f"Not a file: {path}"
     try:
         content = p.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         content = p.read_text(encoding="utf-8", errors="replace")
-    return content if content else "(空文件)"
+    return content if content else "(empty file)"
 
 
 def _before_write(ctx, path: str) -> None:
@@ -246,7 +262,7 @@ def _write_file(path: str, content: str, workspace: str, ctx=None) -> str:
     p = _resolve(workspace, path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
-    return f"已写入 {path}（{len(content)} 字符）"
+    return f"Written {path} ({len(content)} chars)"
 
 
 def _edit_file(path: str, original: str, updated: str, workspace: str, ctx=None) -> str:
@@ -258,14 +274,14 @@ def _edit_file(path: str, original: str, updated: str, workspace: str, ctx=None)
         if not original.strip():
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(updated, encoding="utf-8")
-            return f"已新建 {path}（{len(updated)} 字符）"
-        return f"文件不存在: {path}"
+            return f"Created {path} ({len(updated)} chars)"
+        return f"File not found: {path}"
 
     content = p.read_text(encoding="utf-8")
     if not original.strip():
         # 空 original 对已存在文件 = 追加到末尾
         new_content = content + updated
-        matched = "追加到末尾"
+        matched = "appended"
     else:
         result = _apply_edit(content, original, updated)
         if result is None:
@@ -274,7 +290,7 @@ def _edit_file(path: str, original: str, updated: str, workspace: str, ctx=None)
 
     p.write_text(new_content, encoding="utf-8")
     diff = _diff(content, new_content, path)
-    return f"已编辑 {path}（策略：{matched}）\n{diff}"
+    return f"Edited {path} (strategy: {matched})\n{diff}"
 
 
 # --- edit_file 多策略匹配（参考 Aider do_replace 思路，自写） -----------------
@@ -284,18 +300,18 @@ def _apply_edit(content: str, original: str, updated: str):
     """依次尝试 精确 → 去空行 → ...省略 → 缩进容错。返回 (新内容, 策略名) 或 None。"""
     # 1. 精确匹配（原语义：只替换第一处）
     if original in content:
-        return content.replace(original, updated, 1), "精确匹配"
+        return content.replace(original, updated, 1), "exact"
     # 2. 去首尾空行后精确匹配（模型常多打/漏打空行）
     o_trim = original.strip("\n")
     if o_trim and o_trim != original and o_trim in content:
-        return content.replace(o_trim, updated, 1), "去空行匹配"
+        return content.replace(o_trim, updated, 1), "trimmed"
     # 3. ... 省略匹配（original 中用独立的 ... 行表示省略中间代码）
     if "..." in original or "…" in original:
         rx = _build_elision_re(original)
         if rx:
             m = rx.search(content)
             if m:
-                return content[: m.start()] + updated + content[m.end():], "…省略匹配"
+                return content[: m.start()] + updated + content[m.end():], "elision"
     # 4. 缩进容错：逐行去掉前导空白后比对（处理模型缩进漂移）
     result = _indent_tolerant_match(content, original, updated)
     if result:
@@ -336,7 +352,7 @@ def _indent_tolerant_match(content: str, original: str, updated: str):
             indent = window[0][: len(window[0]) - len(window[0].lstrip())]
             u_lines = [(indent + ln.lstrip()) if ln.strip() else ln for ln in updated.splitlines()]
             new_lines = cl[:start] + u_lines + cl[start + n :]
-            return "\n".join(new_lines), "缩进容错匹配"
+            return "\n".join(new_lines), "indent-tolerant"
     return None
 
 
@@ -349,12 +365,13 @@ def _edit_failure_hint(path: str, original: str, content: str) -> str:
         if matches:
             for ln_no, line in enumerate(content.splitlines(), 1):
                 if line.strip() == matches[0]:
-                    hint = f"\n文件第 {ln_no} 行最接近你的 SEARCH：{line}"
+                    hint = f"\nClosest match at line {ln_no}: {line}"
                     break
     return (
-        f"edit_file 失败：original_lines 未在 {path} 中匹配到。\n"
-        f"已尝试：精确匹配 → 去空行 → …省略 → 缩进容错，均未命中。{hint}\n"
-        f"请用 read_file 查看文件当前真实内容，再重试（注意缩进、空白、标点）。"
+        f"edit_file failed: original_lines not found in {path}. "
+        f"Tried strategies: exact → trimmed → elision → indent-tolerant. "
+        f"All failed.{hint}\n"
+        f"Use read_file to see the actual file content, then retry (check indentation, whitespace, punctuation)."
     )
 
 
@@ -362,6 +379,6 @@ def _diff(old: str, new: str, path: str) -> str:
     """生成 unified diff，让改动一目了然（来源：Cline 的「可见性」思路）。"""
     diff = difflib.unified_diff(
         old.splitlines(), new.splitlines(),
-        fromfile=f"{path} 修改前", tofile=f"{path} 修改后", lineterm="",
+        fromfile=f"{path} (before)", tofile=f"{path} (after)", lineterm="",
     )
     return "\n".join(diff)
