@@ -1,4 +1,5 @@
-编程智能体（Coding Agent）
+Chisel —— 编程智能体（Coding Agent）
+像凿子一样精准地改写代码，而不是推倒重来。
 
 一、项目简介
 这是一个基于大语言模型的编程智能体：用户下达一个编程任务，agent 自主地读写文件、
@@ -7,7 +8,8 @@
 
 二、运行方式
 1. 安装依赖：pip install -r requirements.txt（仅 openai 客户端库）
-2. 配置 API key（环境变量，勿写入仓库）：export LLM_API_KEY=sk-xxx
+2. 配置 API key：项目根目录新建 .env 文件，写入 LLM_API_KEY=sk-xxx
+   （.env 已加入 .gitignore，不会入库；也可用环境变量 LLM_API_KEY）
 3. 运行：python agent.py "写一个计算斐波那契数列的 Python 脚本"
    可选参数：--model、--base-url（切换 DeepSeek/其它 OpenAI 兼容模型）、
    --memory "我喜欢用 Python"（记住用户偏好）、--workspace（指定工作目录）
@@ -31,4 +33,4 @@
 - 编辑策略：借鉴 Aider 的 SEARCH/REPLACE，要求 original_lines 逐字符精确匹配现有内容。
 
 五、Git 仓库地址
-（待补：题目发布后新建公开仓库）
+https://github.com/TkTK0302/Chisel_coder-agent
