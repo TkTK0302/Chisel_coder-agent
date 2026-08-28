@@ -8,3 +8,8 @@ __pycache__/
 # 测试/演示产生的工作目录
 test_workspace/
 demo_workspace/
+
+# 运行时数据（RAG 索引 / 终端缓冲 / 会话账本）
+.chisel/
+*.log
+.pytest_cache/
