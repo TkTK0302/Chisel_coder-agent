@@ -4,3 +4,4 @@ beautifulsoup4>=4.12
 docker>=6.0
 faiss-cpu>=1.8
 numpy>=1.25
+diff-match-patch>=20200713

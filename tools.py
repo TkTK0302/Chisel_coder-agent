@@ -297,7 +297,7 @@ def _edit_file(path: str, original: str, updated: str, workspace: str, ctx=None)
 
 
 def _apply_edit(content: str, original: str, updated: str):
-    """依次尝试 精确 → 去空行 → ...省略 → 缩进容错。返回 (新内容, 策略名) 或 None。"""
+    """依次尝试 精确 → 去空行 → ...省略 → 缩进容错 → 模糊匹配。返回 (新内容, 策略名) 或 None。"""
     # 1. 精确匹配（原语义：只替换第一处）
     if original in content:
         return content.replace(original, updated, 1), "exact"
@@ -316,6 +316,30 @@ def _apply_edit(content: str, original: str, updated: str):
     result = _indent_tolerant_match(content, original, updated)
     if result:
         return result
+    # 5. diff-match-patch 模糊匹配：允许 SEARCH 与原文有微小差异时仍能匹配
+    result = _fuzzy_match_edit(content, original, updated)
+    if result:
+        return result
+    return None
+
+
+def _fuzzy_match_edit(content: str, original: str, updated: str):
+    """diff-match-patch 模糊匹配：允许空格/缩进/换行差异时仍能匹配。
+
+    策略：把 original→updated 做成 patch，以 0.3 的阈值应用到 content 上。
+    如果至少一个 hunk 命中，就接受结果。
+    """
+    try:
+        import diff_match_patch as dmp_module
+
+        dmp = dmp_module.diff_match_patch()
+        dmp.Match_Threshold = 0.2
+        patch = dmp.patch_make(original, updated)
+        result, successes = dmp.patch_apply(patch, content)
+        if successes and any(successes):
+            return result, "fuzzy"
+    except Exception:
+        pass
     return None
 
 
@@ -339,7 +363,8 @@ def _build_elision_re(original: str):
 
 
 def _indent_tolerant_match(content: str, original: str, updated: str):
-    """缩进容错：跳过每行前导空白后比对；命中后用内容实际缩进重排 updated。"""
+    """缩进容错：跳过每行前导空白后比对；命中后直接用 updated 替换（不重排缩进，
+    因为模型写的 updated 缩进通常是对的，只是 SEARCH 的缩进不准）。"""
     cl = content.splitlines()
     o_lines = [ln for ln in original.splitlines() if ln.strip()]
     if not o_lines:
@@ -349,9 +374,7 @@ def _indent_tolerant_match(content: str, original: str, updated: str):
     for start in range(len(cl) - n + 1):
         window = cl[start : start + n]
         if [ln.lstrip() for ln in window] == o_stripped:
-            indent = window[0][: len(window[0]) - len(window[0].lstrip())]
-            u_lines = [(indent + ln.lstrip()) if ln.strip() else ln for ln in updated.splitlines()]
-            new_lines = cl[:start] + u_lines + cl[start + n :]
+            new_lines = cl[:start] + updated.splitlines() + cl[start + n :]
             return "\n".join(new_lines), "indent-tolerant"
     return None
 
@@ -369,7 +392,7 @@ def _edit_failure_hint(path: str, original: str, content: str) -> str:
                     break
     return (
         f"edit_file failed: original_lines not found in {path}. "
-        f"Tried strategies: exact → trimmed → elision → indent-tolerant. "
+        f"Tried strategies: exact → trimmed → elision → indent-tolerant → fuzzy. "
         f"All failed.{hint}\n"
         f"Use read_file to see the actual file content, then retry (check indentation, whitespace, punctuation)."
     )

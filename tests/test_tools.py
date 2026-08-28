@@ -94,11 +94,26 @@ def test_edit_indent_tolerant(tmp_path):
     assert "return 2" in (tmp_path / "a.py").read_text(encoding="utf-8")
 
 
-def test_edit_failure_diagnostic(tmp_path):
-    _write(tmp_path, "a.py", "def f():\n    return 1\n")
+def test_edit_fuzzy_matching(tmp_path):
+    """diff-match-patch 模糊匹配：SEARCH 中函数名与原文略有不同时仍能命中（兜底策略）。"""
+    _write(tmp_path, "a.py", "def add(x, y):\n    return x + y\n")
+    # SEARCH 写成了 calc 而非 add——精确/去空行/省略/缩进容错都失败，fuzzy 兜底
     r = tools.execute_tool("edit_file", {
         "path": "a.py",
-        "original_lines": "def f():\n    return 999",
+        "original_lines": "def calc(x, y):\n    return x + y",
+        "updated_lines": "def add(x, y):\n    return x + y + 1",
+    }, str(tmp_path))
+    # fuzzy 策略被触发（虽然后续 AI 可能需要 read_file 确认结果）
+    assert "fuzzy" in r
+
+
+def test_edit_failure_diagnostic(tmp_path):
+    """所有策略都失败时返回诊断信息。"""
+    _write(tmp_path, "a.py", "def f():\n    return 1\n")
+    # SEARCH 内容完全不同于文件，确保所有策略（包括模糊）都失败
+    r = tools.execute_tool("edit_file", {
+        "path": "a.py",
+        "original_lines": "this_string_does_not_exist_anywhere_in_the_file_xyzzy",
         "updated_lines": "def f():\n    return 2",
     }, str(tmp_path))
     assert "edit_file failed" in r
