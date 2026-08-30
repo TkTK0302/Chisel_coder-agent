@@ -41,6 +41,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from core.runtime import build_runtime
 from core.dual_controller import DualController
+import core.delegate_tool  # noqa: F401  （注册 delegate 工具）
 import core.completion  # noqa: F401  （注册 attempt_completion 工具）
 import env.terminal  # noqa: F401  （import 副作用：注册 terminal 工具）
 import gitops  # noqa: F401  （注册 git 工具）
