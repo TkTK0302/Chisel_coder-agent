@@ -156,7 +156,7 @@ class Agent:
         sandbox_mode: str = "auto",
         use_rag: bool = True,
         max_loops: int = 5,
-        plan_mode: str = "auto",  # cline | openhands | auto
+        plan_mode: str = "auto",  # single | multi | auto
     ):
         self.client = client
         self.workspace = workspace
@@ -197,14 +197,14 @@ class Agent:
             mode = detector.detect_mode(self.workspace)
             print(f"  [Plan mode: {mode.upper()}] {detector.describe(self.workspace)}", flush=True)
 
-        if mode == "openhands":
-            print(f"\n{'='*60}\n  OpenHands Dual-Agent Mode\n{'='*60}", flush=True)
+        if mode == "multi":
+            print(f"\n{'='*60}\n  Multi-Agent Mode (Planning + Delegation)\n{'='*60}", flush=True)
             controller = DualController(self.workspace, self.client, ctx)
             return controller.run(task, self.max_steps)
 
-        # Cline 模式：标准主循环（含审批环节）
-        ctx.plan.mode = "cline"
-        print(f"  [Plan mode: CLINE] Standard agent loop with plan approval.", flush=True)
+        # Single-agent mode: standard loop with plan approval
+        ctx.plan.mode = "single"
+        print(f"  [Plan mode: SINGLE] Standard agent loop with plan approval.", flush=True)
 
         for step in range(1, self.max_steps + 1):
             # 发送前注入当前计划与循环/错误警告（此时上轮工具回合已闭合）
@@ -366,8 +366,8 @@ def main():
     parser.add_argument("--sandbox", choices=["docker", "host", "auto"], default="auto",
                         help="命令执行环境：docker=容器沙盒，host=宿主机，auto=优先 Docker 失败自动降级")
     parser.add_argument("--no-rag", action="store_true", help="禁用代码库语义检索（RAG）")
-    parser.add_argument("--plan-mode", choices=["cline", "openhands", "auto"], default="auto",
-                        help="规划模式：cline=同一 AI 两阶段，openhands=双 AI 规划+执行，auto=自动检测项目规模选择")
+    parser.add_argument("--plan-mode", choices=["single", "multi", "auto"], default="auto",
+                        help="Planning mode: single=standard agent with plan approval, multi=planning agent with sub-agent delegation, auto=auto-detect")
     args = parser.parse_args()
 
     workspace = os.path.abspath(args.workspace)

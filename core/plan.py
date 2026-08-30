@@ -42,7 +42,7 @@ class PlanTracker:
         self.tasks: list[PlanTask] = []
         self.created = False
         self.approved = False  # Cline 审批标记
-        self.mode: str = "cline"  # cline | openhands
+        self.mode: str = "single"  # single | multi
 
     # --- 创建与更新 ----------------------------------------------------------
 
@@ -202,12 +202,24 @@ def _handle_plan(ctx, args: dict) -> str:
         result = plan.create(tasks)
         if not result.startswith("Plan created"):
             return result
-        # Cline 模式：审批环节
-        if plan.mode == "cline" and ctx.ask:
+        # 两种模式都走审批环节
+        if plan.mode == "multi":
+            # Multi mode: planner asks user, then proceeds
+            if ctx.ask:
+                summary = "\n".join(f"  [{t['status']}] {t['id']}: {t['description']}"
+                                   for t in tasks)
+                approval = ctx.ask(
+                    f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}"
+                )
+                if approval and any(kw in approval.lower() for kw in ["no", "not", "dis", "reject", "revise"]):
+                    return "Plan not approved. Please revise the plan."
+                plan.approve()
+                return "Plan approved. You may now delegate tasks to sub-agents."
+        elif ctx.ask:
+            summary = "\n".join(f"  [{t['status']}] {t['id']}: {t['description']}"
+                               for t in tasks)
             approval = ctx.ask(
-                "The following plan has been created. Approve and start execution?\n"
-                + "\n".join(f"  [{t['status']}] {t['id']}: {t['description']}"
-                           for t in tasks)
+                f"The following plan has been created. Approve and start execution?\n{summary}"
             )
             if approval and any(kw in approval.lower() for kw in ["no", "not", "dis", "reject", "revise"]):
                 return "Plan not approved. Please revise the plan."

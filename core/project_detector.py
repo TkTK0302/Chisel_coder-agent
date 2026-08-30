@@ -26,7 +26,7 @@ MAX_SYMBOLS = 50
 
 
 def detect_mode(workspace: str) -> str:
-    """返回 'cline'（小项目）或 'openhands'（大项目）。"""
+    """返回 'single'（小项目）或 'multi'（大项目）。"""
     files = 0
     lines = 0
     symbols = 0
@@ -51,9 +51,9 @@ def detect_mode(workspace: str) -> str:
             except OSError:
                 pass
             if files > MAX_FILES or lines > MAX_LINES or symbols > MAX_SYMBOLS:
-                return "openhands"
+                return "multi"
 
-    return "cline"
+    return "single"
 
 
 def describe(workspace: str) -> str:

@@ -26,12 +26,12 @@ class DualController:
         self.workspace = workspace
         self.client = client
         self.ctx = ctx
-        self.ctx.plan.mode = "openhands"
+        self.ctx.plan.mode = "multi"
 
     def run(self, task: str, max_steps: int = 50) -> str:
         """Run the full planning + execution pipeline."""
         print(f"\n{'='*60}", flush=True)
-        print("  OpenHands Mode: Planning Agent + Sub-agents", flush=True)
+        print("  Multi-Agent Mode: Planning Agent + Sub-agents", flush=True)
         print(f"{'='*60}", flush=True)
 
         try:
