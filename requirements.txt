@@ -6,3 +6,5 @@ faiss-cpu>=1.8
 numpy>=1.25
 diff-match-patch>=20200713
 jieba>=0.42
+ruff>=0.16
+tree-sitter-bash>=0.25

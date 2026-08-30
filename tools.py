@@ -419,7 +419,7 @@ def _diff(old: str, new: str, path: str) -> str:
 
 
 def _lint_file(path: str, workspace: str) -> str:
-    """Aider 风格：编辑后自动检查 Python 语法。"""
+    """Aider 风格：编辑后自动检查 Python 语法并用 ruff 自动修复。"""
     if not path.endswith(".py"):
         return ""
     try:
@@ -430,6 +430,17 @@ def _lint_file(path: str, workspace: str) -> str:
         ast.parse(text)
         return ""
     except SyntaxError as e:
-        return f"Lint: Syntax error at line {e.lineno}: {e.msg}"
+        # 尝试用 ruff 自动修复
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ruff", "check", "--fix", str(full_path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                return f"Lint: Syntax error at line {e.lineno} (auto-fixed by ruff)"
+            return f"Lint: Syntax error at line {e.lineno}: {e.msg}"
+        except Exception:
+            return f"Lint: Syntax error at line {e.lineno}: {e.msg}"
     except Exception as e:
         return f"Lint: {e}"

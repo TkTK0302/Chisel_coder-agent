@@ -243,7 +243,7 @@ class Agent:
                 # 死循环 / 连续错误追踪（元工具不参与计数）
                 if name not in ("plan", "attempt_completion"):
                     ctx.loop.note_call(name, args)
-                ctx.mistake.track(result)
+                ctx.mistake.track(result, name)
                 # 长结果截断后再回填（OpenHands 风格：保存完整内容到文件）
                 messages.append({"role": "tool", "tool_call_id": tc.id,
                                  "content": ctx.context.truncate_output(
@@ -262,8 +262,13 @@ class Agent:
             )
 
             if ctx.loop.should_abort() or ctx.mistake.should_abort():
-                print("\n⚠️ 检测到疑似死循环或连续失败，已停止（工作区修改保留）。")
-                # 自动回滚最近一次快照（第 5 项）
+                print("\n⚠️ Detected possible infinite loop or consecutive failures.", flush=True)
+                # 持久化错误记录
+                try:
+                    ctx.mistake.persist(self.workspace)
+                except Exception:
+                    pass
+                # 自动回滚最近一次快照
                 if getattr(ctx, "git", None) is not None:
                     try:
                         rollback = ctx.git.undo(1)
@@ -271,7 +276,7 @@ class Agent:
                     except Exception:
                         pass
                 self._cleanup(ctx)
-                return "任务因疑似死循环/连续失败被提前停止。已完成的工作保留在工作区。"
+                return "Task stopped due to suspected infinite loop. Changes preserved in workspace."
 
         print("\n⚠️ 达到最大步数，已强制停止。")
         self._cleanup(ctx)
@@ -298,6 +303,12 @@ class Agent:
                 pass
         if getattr(ctx, "plan", None) is not None:
             ctx.plan.finalize()
+        # 持久化审计日志
+        if getattr(ctx, "security", None) is not None:
+            try:
+                ctx.security.persist_audit(self.workspace)
+            except Exception:
+                pass
 
     def _chat_with_retry(self, messages):
         """LLM 调用 + 重试（来源：Aider send_message 的指数退避重试）。"""

@@ -1,25 +1,32 @@
-"""死循环检测与连续错误追踪。
+"""死循环检测 + 连续错误追踪 + 错误恢复指引 + 错误持久化 + 独立重试策略。
 
-设计来源（借鉴 Cline loop-detection.ts / mistake-tracker.ts 的思路，自写）：
-  - 循环键 = (工具名, 参数排序序列化)，只统计**连续**相同签名；中间穿插任何其他
-    工具调用即重置计数 —— 避免把正常调试循环（跑测试 → 改 → 跑测试）误判为死循环。
-  - soft 阈值向模型注入"请换策略"警告；hard 阈值判定死循环、让主循环中止。
+改进：
+  - 错误恢复指引（Cline 风格）：告诉 AI 具体该怎么做
+  - 错误记录持久化：保存到 .chisel/errors.json
+  - 独立重试策略：每个工具可配置不同的重试上限
 """
-
 from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
-# 连续失败判定的错误特征（宽松匹配，靠"连续计数"避免单次误判）
-_ERROR_RE = re.compile(
-    r"出错|失败|错误|Error|Traceback|Exception|mismatch|未精确匹配|"
-    r"FileNotFoundError|AssertionError|FAILED|failed",
-    re.IGNORECASE,
-)
+_META_TOOLS = {"plan", "ask_user", "attempt_completion", "remember", "memory_search"}
 
-# 元工具不参与循环计数（plan 更新 / ask_user 重复调用是正常行为）
-_META_TOOLS = {"plan", "ask_user", "attempt_completion"}
+# 独立重试策略：每个工具的最大连续失败次数
+_TOOL_RETRY_LIMITS = {
+    "bash": 4,
+    "edit_file": 5,
+    "write_file": 3,
+    "read_file": 3,
+    "git": 3,
+    "rag_search": 3,
+    "code_navigate": 3,
+    "web_fetch": 3,
+    "web_search": 3,
+    "terminal": 3,
+    "delegate": 3,
+}
 
 
 class LoopGuard:
@@ -43,14 +50,15 @@ class LoopGuard:
             self._count = 1
         if self._count == self.soft:
             self._warnings.append(
-                f"检测到连续 {self._count} 次重复调用 {name}（参数完全相同），结果没有推进。"
-                f"请停止盲目重试：先用 read_file / rag_search 确认当前真实状态，"
-                f"或换一种思路，不要重复相同操作。"
+                f"Detected {self._count} consecutive identical calls to {name} with no progress. "
+                f"Stop retrying blindly: use read_file to check the actual file state, "
+                f"or try a completely different approach. For example, if edit_file keeps failing, "
+                f"first read the file to see its current content."
             )
         if self._count == self.hard:
             self._warnings.append(
-                f"已连续 {self._count} 次重复调用 {name}，判定疑似死循环。"
-                f"系统将停止当前任务（已做的修改保留在工作区）。"
+                f"Detected {self._count} consecutive identical calls to {name}. "
+                f"System will stop the task (changes preserved in workspace)."
             )
 
     def should_abort(self) -> bool:
@@ -62,13 +70,7 @@ class LoopGuard:
 
 
 class MistakeTracker:
-    """连续错误追踪（Cline 风格：分 3 种类型）。
-
-    错误类型：
-      - api_error：API 连接/限流错误
-      - invalid_tool_call：工具参数错误
-      - tool_execution_failed：工具执行失败
-    """
+    """连续错误追踪（Cline 风格：3 种类型 + 错误恢复指引 + 持久化 + 独立重试）。"""
 
     def __init__(self, soft: int = 3, hard: int = 5):
         self.soft = soft
@@ -79,9 +81,10 @@ class MistakeTracker:
             "tool_execution_failed": 0,
         }
         self._warnings: list[str] = []
+        self._current_tool: str = ""
+        self._error_log: list[dict] = []  # 持久化用
 
     def _classify(self, result: str) -> str | None:
-        """对错误结果分类。返回 None 表示无错误。"""
         if not isinstance(result, str):
             return None
         if any(kw in result for kw in ["APIConnectionError", "APIError", "RateLimit", "Timeout", "ConnectionError"]):
@@ -93,18 +96,29 @@ class MistakeTracker:
             return "tool_execution_failed"
         return None
 
-    def track(self, result: str) -> None:
+    def track(self, result: str, tool_name: str = "") -> None:
+        self._current_tool = tool_name or self._current_tool
         cls = self._classify(result)
         if cls:
             self._errors[cls] += 1
-            # 任意类型达到 hard 阈值就触发
+            self._error_log.append({"tool": self._current_tool, "error_type": cls, "result": result[:200]})
             total = sum(self._errors.values())
+            # soft 阈值警告
             if total == self.soft:
-                details = "; ".join(f"{k}={v}" for k, v in self._errors.items() if v > 0)
                 self._warnings.append(
-                    f"Detected {total} consecutive errors ({details}). "
-                    f"Stop and analyze the root cause: use read_file to check "
-                    f"actual file content, verify assumptions, and try a different approach."
+                    f"Detected {total} consecutive errors. "
+                    f"Stop and analyze the root cause: use read_file to check actual file content, "
+                    f"verify your assumptions, and try a completely different approach."
+                )
+            # 独立重试策略：检查当前工具是否超过上限
+            tool_limit = _TOOL_RETRY_LIMITS.get(self._current_tool, self.hard)
+            if total >= tool_limit:
+                self._warnings.append(
+                    f"Detected {total} consecutive errors on tool '{self._current_tool}' "
+                    f"(limit: {tool_limit}). "
+                    f"Stop and analyze the root cause: use read_file to check actual file content, "
+                    f"verify your assumptions, and try a completely different approach. "
+                    f"For example, if edit_file keeps failing, read the file first to see its current state."
                 )
             if total >= self.hard:
                 self._warnings.append(
@@ -114,6 +128,7 @@ class MistakeTracker:
         else:
             for k in self._errors:
                 self._errors[k] = 0
+            self._error_log = []
 
     def should_abort(self) -> bool:
         return sum(self._errors.values()) >= self.hard
@@ -121,3 +136,19 @@ class MistakeTracker:
     def drain_warnings(self) -> list[str]:
         w, self._warnings = self._warnings, []
         return w
+
+    def persist(self, workspace: str) -> None:
+        """持久化错误记录到 .chisel/errors.json。"""
+        if not self._error_log:
+            return
+        path = Path(workspace) / ".chisel" / "errors.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = []
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        existing.extend(self._error_log)
+        existing = existing[-100:]  # 最多保留 100 条
+        path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")

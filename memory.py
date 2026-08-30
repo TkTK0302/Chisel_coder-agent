@@ -62,11 +62,39 @@ def add_memory(workspace: str, text: str, scope: str = "project", mem_type: str 
                 new_lines.append(line)
         if replaced:
             p.write_text("".join(new_lines), encoding="utf-8")
+            _auto_merge(workspace, p)  # 合并后优化
             return f"Remembered: {key} = {_}"
     if entry_line not in existing:
         p.write_text(existing + entry_line, encoding="utf-8")
+        _auto_merge(workspace, p)  # 合并后优化
         return f"Remembered: {text}"
     return f"Already exists (skipped): {text}"
+
+
+def _auto_merge(workspace: str, p: Path) -> None:
+    """记忆自动合并：当 MEMORY.md 超过 30 行时，合并相似条目。"""
+    content = p.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    if len(lines) <= 30:
+        return
+
+    # 按 key 合并：相同 key 的保留最新值
+    entries = {}
+    for line in lines:
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        text = line[2:].strip()
+        kv = _parse_key(line)
+        if kv:
+            entries[kv[0]] = kv[1]  # key → value，后写入的覆盖先写入的
+        else:
+            # 纯文本去重
+            if text not in entries.values():
+                entries[text] = text
+
+    merged = "\n".join(f"- {k}: {v}" if k != v else f"- {v}" for k, v in entries.items())
+    p.write_text(merged + "\n", encoding="utf-8")
 
 
 # --- 记忆搜索（FTS5+BM25）--------------------------------------------------
