@@ -40,6 +40,7 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 from core.runtime import build_runtime
+from core.dual_controller import DualController
 import core.completion  # noqa: F401  （注册 attempt_completion 工具）
 import env.terminal  # noqa: F401  （import 副作用：注册 terminal 工具）
 import gitops  # noqa: F401  （注册 git 工具）
@@ -154,6 +155,7 @@ class Agent:
         sandbox_mode: str = "auto",
         use_rag: bool = True,
         max_loops: int = 5,
+        plan_mode: str = "auto",  # cline | openhands | auto
     ):
         self.client = client
         self.workspace = workspace
@@ -162,6 +164,7 @@ class Agent:
         self.sandbox_mode = sandbox_mode
         self.use_rag = use_rag
         self.max_loops = max_loops
+        self.plan_mode = plan_mode
         self.ctx = None
 
     def run(self, task: str) -> str:
@@ -184,6 +187,23 @@ class Agent:
             {"role": "user", "content": task},
         ]
         ctx.plan.inject(messages)
+
+        # ---- 计划模式调度：Cline（小项目） vs OpenHands（大项目） ----
+        import core.project_detector as detector
+
+        mode = self.plan_mode
+        if mode == "auto":
+            mode = detector.detect_mode(self.workspace)
+            print(f"  [Plan mode: {mode.upper()}] {detector.describe(self.workspace)}", flush=True)
+
+        if mode == "openhands":
+            print(f"\n{'='*60}\n  OpenHands Dual-Agent Mode\n{'='*60}", flush=True)
+            controller = DualController(self.workspace, self.client, ctx)
+            return controller.run(task, self.max_steps)
+
+        # Cline 模式：标准主循环（含审批环节）
+        ctx.plan.mode = "cline"
+        print(f"  [Plan mode: CLINE] Standard agent loop with plan approval.", flush=True)
 
         for step in range(1, self.max_steps + 1):
             # 发送前注入当前计划与循环/错误警告（此时上轮工具回合已闭合）
@@ -345,6 +365,8 @@ def main():
     parser.add_argument("--sandbox", choices=["docker", "host", "auto"], default="auto",
                         help="命令执行环境：docker=容器沙盒，host=宿主机，auto=优先 Docker 失败自动降级")
     parser.add_argument("--no-rag", action="store_true", help="禁用代码库语义检索（RAG）")
+    parser.add_argument("--plan-mode", choices=["cline", "openhands", "auto"], default="auto",
+                        help="规划模式：cline=同一 AI 两阶段，openhands=双 AI 规划+执行，auto=自动检测项目规模选择")
     args = parser.parse_args()
 
     workspace = os.path.abspath(args.workspace)
@@ -370,6 +392,7 @@ def main():
         sandbox_mode=args.sandbox,
         use_rag=not args.no_rag,
         max_loops=args.max_loops,
+        plan_mode=args.plan_mode,
     )
 
     if args.task:
