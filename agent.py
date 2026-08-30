@@ -181,6 +181,7 @@ class Agent:
             use_rag=self.use_rag,
         )
         self.ctx = ctx
+        ctx.task = task  # 给快照命名用
 
         messages = [
             {"role": "system", "content": build_system_prompt(self.workspace)},
@@ -257,6 +258,13 @@ class Agent:
 
             if ctx.loop.should_abort() or ctx.mistake.should_abort():
                 print("\n⚠️ 检测到疑似死循环或连续失败，已停止（工作区修改保留）。")
+                # 自动回滚最近一次快照（第 5 项）
+                if getattr(ctx, "git", None) is not None:
+                    try:
+                        rollback = ctx.git.undo(1)
+                        print(f"  ↳ Auto-rollback: {rollback}", flush=True)
+                    except Exception:
+                        pass
                 self._cleanup(ctx)
                 return "任务因疑似死循环/连续失败被提前停止。已完成的工作保留在工作区。"
 

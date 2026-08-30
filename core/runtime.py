@@ -36,6 +36,8 @@ class ExecutionContext:
     # 工具链（P4 接入）
     git: Any = None
     ast: Any = None
+    # 当前任务描述（用于快照命名）
+    task: str = ""
     # 检索（P5 接入）
     rag: Any = None
 

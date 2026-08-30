@@ -252,7 +252,7 @@ def _before_write(ctx, path: str) -> None:
     """写文件前的版本安全网钩子（P4 gitops 接入后生效）。"""
     if ctx is not None and getattr(ctx, "git", None) is not None:
         try:
-            ctx.git.before_write(path)
+            ctx.git.before_write(path, ctx.task)
         except Exception:
             pass  # 快照失败不阻断写入
 
