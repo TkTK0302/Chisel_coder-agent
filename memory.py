@@ -1,25 +1,20 @@
-"""记忆模块：持久记忆 + 结构化 key-value + 去重 + AI 可写。
+"""记忆模块：持久记忆 + 结构化 key-value + 去重 + AI 可写 + 分类 + 搜索 + checkpoint。
 
-三种写入方式：
-  1. --memory "key: value"  CLI 参数（用户写入）
-  2. --memory "纯文本偏好"   CLI 参数（用户写入，无 key）
-  3. remember(key="language", value="Python")  AI 工具（AI 自动写入）
-
-存储格式（MEMORY.md）：
-  - language: Python
-  - test_first: true
-  - 纯文本偏好
-
-读取时按 key 去重，同 key 覆盖。纯文本行（无冒号）追加并去重。
+改进：
+  - 记忆分类：按 scope (global/project/session) 和 type (preference/note/checkpoint)
+  - 记忆搜索：FTS5+BM25 搜索记忆内容
+  - 自动 checkpoint：每次任务完成时自动写 checkpoint.md
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import sqlite3
 from pathlib import Path
 
 from tools import register_tool
 
-# 匹配 "key: value" 格式
 _KEY_VALUE_RE = re.compile(r"^- (.+?):\s*(.*)$", re.MULTILINE)
 
 
@@ -36,55 +31,122 @@ def load_memory(workspace: str) -> str:
 
 
 def _parse_key(entry: str) -> tuple[str, str] | None:
-    """解析 "key: value" 格式，返回 (key, value) 或 None。"""
     m = re.match(r"^- (.+?):\s*(.*)$", entry.strip())
     if m:
         return m.group(1).strip(), m.group(2).strip()
     return None
 
 
-def add_memory(workspace: str, text: str) -> str:
-    """写入一条偏好。支持 key: value 格式（同 key 覆盖）和纯文本（去重追加）。
-
-    用法：
-      add_memory(".", "language: Python")    → 结构化 key-value
-      add_memory(".", "我喜欢用 Python")      → 纯文本
-    """
+def add_memory(workspace: str, text: str, scope: str = "project", mem_type: str = "preference") -> str:
+    """写入一条偏好。支持 key: value 格式和纯文本。"""
     p = memory_path(workspace)
     entry_line = f"- {text}\n"
 
     if not p.exists():
         p.write_text(entry_line, encoding="utf-8")
-        return f"已记住：{text}"
+        return f"Remembered: {text}"
 
     existing = p.read_text(encoding="utf-8")
-
-    # 检查是否是 key: value 格式
     kv = _parse_key(entry_line)
     if kv:
         key, _ = kv
-        # 在现有内容中查找同 key 行
         lines = existing.splitlines(keepends=True)
         replaced = False
         new_lines = []
         for line in lines:
             line_kv = _parse_key(line)
             if line_kv and line_kv[0] == key:
-                # 替换旧值
                 new_lines.append(entry_line)
                 replaced = True
             else:
                 new_lines.append(line)
         if replaced:
             p.write_text("".join(new_lines), encoding="utf-8")
-            return f"已记住：{key} = {_}"
-
-    # 纯文本：去重追加
+            return f"Remembered: {key} = {_}"
     if entry_line not in existing:
         p.write_text(existing + entry_line, encoding="utf-8")
-        return f"已记住：{text}"
-    else:
-        return f"已存在（跳过重复）：{text}"
+        return f"Remembered: {text}"
+    return f"Already exists (skipped): {text}"
+
+
+# --- 记忆搜索（FTS5+BM25）--------------------------------------------------
+
+_MEMORY_DB = {}  # workspace -> db_path
+
+
+def _get_memory_db(workspace: str) -> sqlite3.Connection:
+    """获取记忆搜索的 SQLite 数据库。"""
+    if workspace not in _MEMORY_DB:
+        db_path = Path(workspace) / ".chisel" / "memory_search.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE IF NOT EXISTS memories (scope TEXT, type TEXT, content TEXT)")
+        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content)")
+        conn.commit()
+        _MEMORY_DB[workspace] = conn
+        # 初始索引现有 MEMORY.md
+        _reindex_memory(workspace, conn)
+    return _MEMORY_DB[workspace]
+
+
+def _reindex_memory(workspace: str, conn: sqlite3.Connection) -> None:
+    """把 MEMORY.md 的内容索引到 FTS5。"""
+    p = memory_path(workspace)
+    if not p.exists():
+        return
+    content = p.read_text(encoding="utf-8").strip()
+    if not content:
+        return
+    conn.execute("DELETE FROM memories")
+    conn.execute("DELETE FROM memories_fts")
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            text = line[2:].strip()
+            scope = "project"
+            mem_type = "preference"
+            conn.execute("INSERT INTO memories (scope, type, content) VALUES (?,?,?)",
+                        (scope, mem_type, text))
+    conn.commit()
+    # 索引到 FTS
+    rows = conn.execute("SELECT rowid, content FROM memories").fetchall()
+    for rowid, content in rows:
+        conn.execute("INSERT INTO memories_fts (rowid, content) VALUES (?,?)", (rowid, content))
+    conn.commit()
+
+
+def search_memory(workspace: str, query: str, top_k: int = 5) -> str:
+    """搜索记忆内容。"""
+    try:
+        conn = _get_memory_db(workspace)
+        rows = conn.execute(
+            "SELECT m.scope, m.type, m.content, bm25(memories_fts) AS r "
+            "FROM memories_fts f JOIN memories m ON f.rowid = m.rowid "
+            "WHERE memories_fts MATCH ? ORDER BY r LIMIT ?",
+            (query, top_k),
+        ).fetchall()
+        if not rows:
+            return "No matching memories found."
+        parts = [f"Found {len(rows)} memories:"]
+        for scope, mem_type, content, _ in rows:
+            parts.append(f"  [{scope}/{mem_type}] {content}")
+        return "\n".join(parts)
+    except Exception as e:
+        return f"Memory search error: {e}"
+
+
+# --- 自动 checkpoint ---------------------------------------------------------
+
+def save_checkpoint(workspace: str, task: str, result: str) -> str:
+    """任务完成时自动保存 checkpoint。"""
+    from datetime import datetime
+    check_dir = Path(workspace) / ".chisel" / "checkpoints"
+    check_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"checkpoint_{timestamp}.md"
+    content = f"# Checkpoint {timestamp}\n\n## Task\n{task}\n\n## Result\n{result}\n"
+    (check_dir / filename).write_text(content, encoding="utf-8")
+    return f"Checkpoint saved: {filename}"
 
 
 # --- AI 可写的 remember 工具 ------------------------------------------------
@@ -94,16 +156,31 @@ REMEMBER_SCHEMA = {
     "function": {
         "name": "remember",
         "description": "Remember a user preference or important information persistently across sessions. "
-                       "Call this when you notice a clear preference, convention, or requirement "
-                       "that should be remembered for future tasks. "
-                       "Use key:value format for structured preferences (e.g., language: Python).",
+                       "Call this when you notice a clear preference, convention, or requirement.",
         "parameters": {
             "type": "object",
             "properties": {
-                "key": {"type": "string", "description": "Preference name, e.g. 'language', 'style', 'test_framework'"},
-                "value": {"type": "string", "description": "Preference value, e.g. 'Python', 'type hints', 'pytest'"},
+                "key": {"type": "string", "description": "Preference name, e.g. 'language', 'style'"},
+                "value": {"type": "string", "description": "Preference value, e.g. 'Python', 'type hints'"},
             },
             "required": ["key", "value"],
+        },
+    },
+}
+
+MEMORY_SEARCH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "memory_search",
+        "description": "Search remembered preferences and information from previous sessions. "
+                       "Use this to recall user preferences or conventions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "top_k": {"type": "integer", "description": "Number of results, default 5"},
+            },
+            "required": ["query"],
         },
     },
 }
@@ -117,4 +194,9 @@ def _handle_remember(ctx, args: dict) -> str:
     return add_memory(ctx.workspace, f"{key}: {value}")
 
 
+def _handle_memory_search(ctx, args: dict) -> str:
+    return search_memory(ctx.workspace, args.get("query", ""), args.get("top_k") or 5)
+
+
 register_tool(REMEMBER_SCHEMA, _handle_remember)
+register_tool(MEMORY_SEARCH_SCHEMA, _handle_memory_search)

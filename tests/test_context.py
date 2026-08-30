@@ -125,8 +125,8 @@ def test_compress_summarizes_big_round():
     assert changed is True
     assert_no_orphan_tools(msgs)
     assert client.summarize_calls >= 1
-    # 应出现 [历史摘要] 消息
-    assert any(m.get("role") == "user" and "[历史摘要]" in str(m.get("content")) for m in msgs)
+    # 应出现摘要消息
+    assert any(m.get("role") == "user" and "Summary" in str(m.get("content")) for m in msgs)
 
 
 def test_compress_never_touches_pinned():

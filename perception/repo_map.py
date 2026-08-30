@@ -1,28 +1,21 @@
 """仓库地图（Repo Map）：自动把项目代码结构注入到 system prompt。
 
-设计来源（借鉴 Aider 的 repomap.py + tree-sitter 思路，但用 Python 内置 ast 实现）：
-  Aider 的 RepoMap 用 tree-sitter 解析多语言，用 PageRank 排序函数重要性。
-  本项目精简为：用 perception/ast_index 的 AST 符号表，按文件组织成紧凑文本，
-  任务开始时自动注入到 AI 上下文 —— AI 不用先读文件就知道项目里有什么函数/类。
-
-  面试辩护点："我们的 RepoMap 用了 Python 内置 ast，零外部依赖，对纯 Python 项目
-  效果等价于 tree-sitter 方案，但在面试时可以直接说清楚原理。"
+支持多语言（Python ast + 其他语言正则提取）。
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
 from pathlib import Path
 
+_SKIP_DIRS = {".git", ".chisel", "__pycache__", "node_modules", ".venv", ".pytest_cache",
+              ".aider.tags.cache.v4", "venv", "env"}
+_SOURCE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp"}
+
 
 def get_repo_map(workspace: str, max_chars: int = 2000) -> str:
-    """生成项目代码结构签名摘要，注入到 system prompt。
-
-    扫描工作目录下所有 .py 文件，提取函数/类定义，格式化为紧凑文本。
-    非 Python 文件只列文件名。
-    """
-    parts: list[str] = ["项目结构（函数/类概览）："]
-    _SKIP_DIRS = {".git", ".chisel", "__pycache__", "node_modules", ".venv", ".pytest_cache", ".aider.tags.cache.v4"}
+    parts: list[str] = ["Project structure (functions/classes):"]
     total = 0
     for root, dirs, files in os.walk(workspace):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
@@ -30,17 +23,15 @@ def get_repo_map(workspace: str, max_chars: int = 2000) -> str:
             if total > max_chars:
                 break
             rel = os.path.relpath(os.path.join(root, f), workspace).replace("\\", "/")
-            if f.endswith(".py"):
-                symbols = _extract_symbols(os.path.join(root, f))
-                if symbols:
-                    line = f"  {rel}:  {', '.join(symbols)}"
-                    total += len(line) + 1
-                    if total > max_chars:
-                        break
-                    parts.append(line)
+            ext = Path(f).suffix
+            if ext == ".py":
+                symbols = _extract_python(os.path.join(root, f))
+            elif ext in _SOURCE_EXTS:
+                symbols = _extract_regex(os.path.join(root, f), ext)
             else:
-                # 非 Python 文件只列文件名
-                line = f"  {rel}"
+                continue
+            if symbols:
+                line = f"  {rel}:  {', '.join(symbols)}"
                 total += len(line) + 1
                 if total > max_chars:
                     break
@@ -50,17 +41,68 @@ def get_repo_map(workspace: str, max_chars: int = 2000) -> str:
     return "\n".join(parts)
 
 
-def _extract_symbols(path: str) -> list[str]:
-    """用 ast 提取文件顶层函数和类名。"""
-    import ast
-
+def _extract_python(path: str) -> list[str]:
     try:
         tree = ast.parse(Path(path).read_text(encoding="utf-8", errors="replace"))
     except (SyntaxError, OSError):
         return []
-    symbols: list[str] = []
+    symbols = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             kind = "class" if isinstance(node, ast.ClassDef) else "def"
             symbols.append(f"{kind} {node.name}")
     return symbols[:30]
+
+
+# 多语言函数/类定义的正则模式
+_LANG_PATTERNS = {
+    ".js": [
+        (r"(?:export\s+)?(?:async\s+)?function\s+(\w+)", "def"),
+        (r"(?:export\s+)?class\s+(\w+)", "class"),
+        (r"(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\(.*\)\s*=>", "arrow"),
+    ],
+    ".ts": [
+        (r"(?:export\s+)?(?:async\s+)?function\s+(\w+)", "def"),
+        (r"(?:export\s+)?class\s+(\w+)", "class"),
+        (r"(?:export\s+)?interface\s+(\w+)", "interface"),
+        (r"(?:export\s+)?(?:const|let|var)\s+(\w+)\s*:", "typed"),
+        (r"(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*\(.*\)\s*=>", "arrow"),
+    ],
+    ".go": [
+        (r"func\s+(\w+)", "func"),
+        (r"type\s+(\w+)\s+struct", "struct"),
+        (r"type\s+(\w+)\s+interface", "interface"),
+    ],
+    ".rs": [
+        (r"fn\s+(\w+)", "fn"),
+        (r"struct\s+(\w+)", "struct"),
+        (r"enum\s+(\w+)", "enum"),
+        (r"impl\s+(\w+)", "impl"),
+        (r"trait\s+(\w+)", "trait"),
+    ],
+    ".java": [
+        (r"(?:public|private|protected)?\s*(?:static\s+)?(?:class|interface|enum)\s+(\w+)", "class"),
+        (r"(?:public|private|protected)?\s*(?:static\s+)?\w+\s+(\w+)\s*\(.*\)", "method"),
+    ],
+    ".c": [ (r"^\w+\s+(\w+)\s*\(.*\)\s*\{", "func") ],
+    ".cpp": [ (r"^\w+\s+(\w+)\s*\(.*\)\s*\{", "func"), (r"class\s+(\w+)", "class") ],
+    ".h": [ (r"^\w+\s+(\w+)\s*\(.*\)", "decl"), (r"class\s+(\w+)", "class") ],
+    ".hpp": [ (r"^\w+\s+(\w+)\s*\(.*\)", "decl"), (r"class\s+(\w+)", "class") ],
+}
+
+
+def _extract_regex(path: str, ext: str) -> list[str]:
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    symbols = []
+    patterns = _LANG_PATTERNS.get(ext, [])
+    seen = set()
+    for pattern, kind in patterns:
+        for m in re.finditer(pattern, text, re.MULTILINE):
+            name = m.group(1)
+            if name and name not in seen:
+                seen.add(name)
+                symbols.append(f"{kind} {name}")
+    return symbols[:20]

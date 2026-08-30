@@ -29,7 +29,8 @@ def test_repo_map_empty_on_no_py(tmp_path):
     assert rm == ""
 
 
-def test_repo_map_lists_non_py_files(tmp_path):
-    (tmp_path / "notes.txt").write_text("hello\n", encoding="utf-8")
+def test_repo_map_lists_source_files(tmp_path):
+    """非 Python 源文件也列出符号。"""
+    (tmp_path / "calc.js").write_text("function add(x, y) { return x + y; }\n", encoding="utf-8")
     rm = get_repo_map(str(tmp_path))
-    assert "notes.txt" in rm
+    assert "calc.js" in rm
