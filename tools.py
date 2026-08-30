@@ -184,6 +184,8 @@ def execute_tool(name: str, args: dict, workspace: str, ctx=None) -> str:
 
 
 def _confirm_for(ctx):
+    if ctx is not None and getattr(ctx, "security", None) is not None:
+        return ctx.security.check
     if ctx is not None and ctx.confirm_dangerous is not None:
         return ctx.confirm_dangerous
     return lambda command: False  # 无上下文时默认拒绝（安全第一）
@@ -226,8 +228,8 @@ def _host_bash(command: str, workspace: str) -> str:
 
 
 def _run_bash(command: str, workspace: str, ctx=None) -> str:
-    # 危险命令先确认（OpenHands 的「执行前询问」思路）
-    if is_dangerous(command) and not _confirm_for(ctx)(command):
+    # 安全确认：SecurityAnalyzer 评估风险 → 必要时让用户确认
+    if not _confirm_for(ctx)(command):
         return "User cancelled the command."
     # 有上下文时走沙盒（默认 auto：Docker 优先，失败降级宿主）
     if ctx is not None:

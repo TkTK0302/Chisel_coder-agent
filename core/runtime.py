@@ -14,6 +14,7 @@ from core import ask as ask_mod
 from core import context as ctx_mod
 from core import loop_guard
 from core import plan as plan_mod
+from core.security_analyzer import SecurityAnalyzer
 
 
 @dataclass
@@ -28,6 +29,7 @@ class ExecutionContext:
     plan: plan_mod.PlanTracker = None
     ask: Callable[[str], str] = None
     confirm_dangerous: Callable[[str], bool] = None
+    security: SecurityAnalyzer = None
     # 执行环境（P3 懒加载）
     sandbox_mode: str = "auto"
     use_rag: bool = True
@@ -111,6 +113,7 @@ def build_runtime(
         plan=plan_mod.PlanTracker(),
         ask=ask_mod.make_ask(interactive),
         confirm_dangerous=confirm_dangerous or (lambda cmd: False),
+        security=SecurityAnalyzer(interactive=interactive),
         sandbox_mode=sandbox_mode,
         use_rag=use_rag,
     )
