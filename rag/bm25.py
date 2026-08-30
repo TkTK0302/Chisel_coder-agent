@@ -1,18 +1,19 @@
-"""BM25 关键词检索：SQLite FTS5 为主路 + CJK bigram 兜底。
+"""BM25 关键词检索：FTS5 为主路 + jieba 中文分词（改进 3）。
 
-设计来源（借鉴 MiMo memory 的 FTS5+BM25 思路，自写）：
-  - 英文/代码标识符：FTS5 MATCH（unicode61 分词天然支持）。
-  - 中文：FTS5 unicode61 不分词，改用"重叠 bigram 扫描 chunk 文本"打分兜底
-    （代码库小，全量扫描可接受；bigram 对中文召回稳定）。
+改进 3：用 jieba 分词替代 CJK bigram 暴力扫描。
+  - 之前：bigram 扫描（"闰年计算" → ["闰年", "年计", "计算"]）
+  - 现在：jieba 分词（"闰年计算" → ["闰年", "计算"]）
+  分词更准确，不产生无意义的 bigram（如"年计"）。
 """
 from __future__ import annotations
 
 import re
 
+import jieba
+
 from rag.indexer import Indexer
 from rag.models import SearchHit, rrf_merge
 
-_CJK = re.compile(r"[一-鿿]+")
 _ASCII_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{1,}")
 
 
@@ -40,16 +41,16 @@ class BM25Search:
             if hits:
                 ranked_lists.append(hits)
 
-        # 2) 中文 → 重叠 bigram 扫描兜底
-        bigrams = _bigrams(query)
-        if bigrams:
+        # 2) 中文 → jieba 分词（改进 3）
+        cjk_words = _cjk_words(query)
+        if cjk_words:
             scores: list[tuple[int, SearchHit]] = []
             for rowid, path, sl, el, text in conn.execute(
                 "SELECT id, path, start_line, end_line, text FROM chunks"
             ).fetchall():
-                cnt = sum(text.count(bg) for bg in bigrams)
+                cnt = sum(text.count(w) for w in cjk_words)
                 if cnt:
-                    scores.append((cnt, SearchHit(path, sl, el, text[:800], source="cjk")))
+                    scores.append((cnt, SearchHit(path, sl, el, text[:800], source="chinese")))
             scores.sort(key=lambda x: -x[0])
             if scores:
                 ranked_lists.append([h for _, h in scores[:60]])
@@ -60,14 +61,15 @@ class BM25Search:
 _STOPWORDS = {
     "the", "and", "for", "with", "from", "import", "def", "class", "return",
     "this", "that", "into", "are", "was", "is", "not", "you", "your",
+    "a", "an", "in", "on", "to", "of", "it", "as", "or", "be",
 }
 
 
-def _bigrams(query: str) -> list[str]:
-    result = []
-    for run in _CJK.findall(query):
-        result.extend(run[i:i + 2] for i in range(len(run) - 1))
-    return result
+def _cjk_words(query: str) -> list[str]:
+    """用 jieba 分词提取中文关键词。"""
+    words = jieba.lcut(query)
+    # 过滤掉非中文词（英文词由 FTS5 处理）和单字
+    return [w for w in words if len(w) >= 2 and any("一" <= ch <= "鿿" for ch in w)]
 
 
 def _line_of(conn, rowid: int) -> int:

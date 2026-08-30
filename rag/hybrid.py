@@ -1,14 +1,18 @@
-"""混合检索门面：BM25（必开）+ 向量（可选），RRF 融合。
+"""混合检索门面：BM25（必开）+ 向量（可选），RRF 融合 + Rerank + 查询扩展 + 缓存。
 
-rag_search 工具入口：懒建索引 → mtime 对账 → 两路检索 → RRF 融合 → 返回片段。
+改进 4：查询扩展（LLM 把 1 个查询扩展成多个）
+改进 5：Rerank 重排序
+改进 6：LRU 缓存（缓存最近 20 条查询结果）
 """
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 from rag.bm25 import BM25Search
 from rag.indexer import Indexer
 from rag.models import SearchHit, rrf_merge
+from rag.reranker import Reranker
 from rag.vector import VectorIndex
 from tools import register_tool
 
@@ -42,8 +46,11 @@ class HybridIndex:
         self.indexer = Indexer(workspace, self.db_path)
         self.bm25 = BM25Search(self.indexer)
         self.vector = VectorIndex(workspace, client, enabled)
+        self.reranker = Reranker(enabled)
         self._built = False
-        self._last_files: dict[str, float] | None = None
+        self._last_files: dict[str, tuple[float, int]] | None = None
+        # 改进 6：LRU 缓存
+        self._search_cache = functools.lru_cache(maxsize=20)(self._search_impl)
 
     def ensure_built(self) -> None:
         if not self._built:
@@ -54,22 +61,68 @@ class HybridIndex:
         self.ensure_built()
         self.indexer.reconcile()
 
-        # 文件集变化时重建向量索引（懒：仅在启用了向量且首次/文件变更时）
+        # 文件集变化时重建向量索引
         if self.vector.enabled():
             files_now = self.indexer.files()
             if self.vector.index is None or files_now != self._last_files:
                 self.vector.build(self.indexer.all_chunks())
                 self._last_files = files_now
 
-        bm_hits = self.bm25.search(query, top_k * 3)
-        vec_hits = self.vector.search(query, top_k * 3)
+        # 改进 4：查询扩展
+        expanded = self._expand_query(query)
+        if len(expanded) > 1:
+            all_hits = []
+            for q in expanded:
+                all_hits.extend(self._search_impl(q, top_k * 3))
+            merged = rrf_merge([all_hits], top_k * 2)
+        else:
+            merged = self._search_impl(query, top_k * 2)
+
+        # 改进 5：Rerank
+        if self.reranker.enabled():
+            merged = self.reranker.rerank(query, merged)
+
+        return merged[:top_k]
+
+    def _search_impl(self, query: str, top_k: int) -> list[SearchHit]:
+        """实际检索逻辑（被 LRU 缓存装饰）。"""
+        bm_hits = self.bm25.search(query, top_k)
+        vec_hits = self.vector.search(query, top_k)
         return rrf_merge([bm_hits, vec_hits], top_k)
+
+    def _expand_query(self, query: str) -> list[str]:
+        """改进 4：查询扩展。"""
+        ascii_count = sum(1 for ch in query if ch.isascii() and ch.isalpha())
+        cjk_count = sum(1 for ch in query if "一" <= ch <= "鿿")
+        # 如果查询太短或只有一种语言，不扩展
+        if len(query) < 6 or min(ascii_count, cjk_count) == 0:
+            return [query]
+        # 简单扩展：提取标识符 + 中文词
+        import re
+        tokens = []
+        for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{1,}", query):
+            tokens.append(t)
+        import jieba
+        for w in jieba.lcut(query):
+            if len(w) >= 2:
+                tokens.append(w)
+        if len(tokens) <= 2:
+            return [query]
+        # 生成 2 个变体：纯标识符 + 纯中文
+        asc = [t for t in tokens if t.isascii()]
+        cjk = [t for t in tokens if not t.isascii()]
+        variants = [query]
+        if asc and len(asc) < len(tokens):
+            variants.append(" ".join(asc))
+        if cjk and len(cjk) < len(tokens):
+            variants.append("".join(cjk))
+        return variants
 
 
 def _format_hits(hits: list[SearchHit]) -> str:
     if not hits:
-        return "rag_search 未找到相关代码片段（可尝试换更具体的关键词，或改用 bash grep）。"
-    parts = [f"检索到 {len(hits)} 段相关代码："]
+        return "rag_search: no relevant code found (try different keywords or use bash grep)."
+    parts = [f"Found {len(hits)} relevant code snippets:"]
     for h in hits:
         snippet = h.snippet if len(h.snippet) <= 400 else h.snippet[:400] + "..."
         parts.append(f"\n--- {h.file}:{h.start_line}-{h.end_line} [{h.source}] ---\n{snippet}")
@@ -81,7 +134,7 @@ def _handle_rag_search(ctx, args: dict) -> str:
         idx = ctx.ensure_rag()
         hits = idx.search(args.get("query", ""), args.get("top_k") or 5)
     except Exception as e:
-        return f"rag_search 失败: {type(e).__name__}: {e}"
+        return f"rag_search failed: {type(e).__name__}: {e}"
     return _format_hits(hits)
 
 
