@@ -157,6 +157,7 @@ class Agent:
         use_rag: bool = True,
         max_loops: int = 5,
         plan_mode: str = "auto",  # single | multi | auto
+        sandbox_image: str | None = None,
     ):
         self.client = client
         self.workspace = workspace
@@ -166,6 +167,7 @@ class Agent:
         self.use_rag = use_rag
         self.max_loops = max_loops
         self.plan_mode = plan_mode
+        self.sandbox_image = sandbox_image
         self.ctx = None
 
     def run(self, task: str) -> str:
@@ -178,6 +180,7 @@ class Agent:
             loop_hard=self.max_loops,
             mistake_hard=self.max_loops,
             sandbox_mode=self.sandbox_mode,
+            sandbox_image=self.sandbox_image,
             use_rag=self.use_rag,
         )
         self.ctx = ctx
@@ -374,8 +377,10 @@ def main():
     parser.add_argument("--max-steps", type=int, default=50, help="最大步数（防死循环）")
     parser.add_argument("--max-loops", type=int, default=5, help="连续相同调用/连续错误的最大次数（触发中止）")
     parser.add_argument("--sandbox", choices=["docker", "host", "auto"], default="auto",
-                        help="命令执行环境：docker=容器沙盒，host=宿主机，auto=优先 Docker 失败自动降级")
-    parser.add_argument("--no-rag", action="store_true", help="禁用代码库语义检索（RAG）")
+                        help="Command execution environment: docker=container, host=local, auto=try docker first")
+    parser.add_argument("--sandbox-image", default=None,
+                        help="Docker image for sandbox (default: python:3.12-slim, or CHISEL_SANDBOX_IMAGE env)")
+    parser.add_argument("--no-rag", action="store_true", help="Disable RAG search")
     parser.add_argument("--plan-mode", choices=["single", "multi", "auto"], default="auto",
                         help="Planning mode: single=standard agent with plan approval, multi=planning agent with sub-agent delegation, auto=auto-detect")
     args = parser.parse_args()
@@ -404,6 +409,7 @@ def main():
         use_rag=not args.no_rag,
         max_loops=args.max_loops,
         plan_mode=args.plan_mode,
+        sandbox_image=args.sandbox_image,
     )
 
     if args.task:

@@ -32,6 +32,7 @@ class ExecutionContext:
     security: SecurityAnalyzer = None
     # 执行环境（P3 懒加载）
     sandbox_mode: str = "auto"
+    sandbox_image: str | None = None
     use_rag: bool = True
     sandbox: Any = None
     terminal: Any = None
@@ -53,8 +54,9 @@ class ExecutionContext:
         """创建沙盒（默认 auto：优先 Docker，失败降级宿主）。"""
         if self.sandbox is None:
             from env.sandbox import Sandbox
-
-            self.sandbox = Sandbox(self.workspace, self.sandbox_mode)
+            import os
+            image = self.sandbox_image or os.environ.get("CHISEL_SANDBOX_IMAGE", "python:3.12-slim")
+            self.sandbox = Sandbox(self.workspace, self.sandbox_mode, image=image)
         return self.sandbox
 
     def ensure_terminal(self):
@@ -100,6 +102,7 @@ def build_runtime(
     mistake_soft: int = 3,
     mistake_hard: int = 5,
     sandbox_mode: str = "auto",
+    sandbox_image: str | None = None,
     use_rag: bool = True,
     **kwargs,
 ) -> ExecutionContext:
@@ -115,6 +118,7 @@ def build_runtime(
         confirm_dangerous=confirm_dangerous or (lambda cmd: False),
         security=SecurityAnalyzer(interactive=interactive),
         sandbox_mode=sandbox_mode,
+        sandbox_image=sandbox_image,
         use_rag=use_rag,
     )
     for k, v in kwargs.items():
