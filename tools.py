@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import ast
 import difflib
 import re
 import subprocess
@@ -264,7 +265,11 @@ def _write_file(path: str, content: str, workspace: str, ctx=None) -> str:
     p = _resolve(workspace, path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
-    return f"Written {path} ({len(content)} chars)"
+    lint_result = _lint_file(path, workspace)
+    result = f"Written {path} ({len(content)} chars)"
+    if lint_result:
+        result += f"\n{lint_result}"
+    return result
 
 
 def _edit_file(path: str, original: str, updated: str, workspace: str, ctx=None) -> str:
@@ -292,7 +297,11 @@ def _edit_file(path: str, original: str, updated: str, workspace: str, ctx=None)
 
     p.write_text(new_content, encoding="utf-8")
     diff = _diff(content, new_content, path)
-    return f"Edited {path} (strategy: {matched})\n{diff}"
+    lint_result = _lint_file(path, workspace)
+    result = f"Edited {path} (strategy: {matched})\n{diff}"
+    if lint_result:
+        result += f"\n{lint_result}"
+    return result
 
 
 # --- edit_file 多策略匹配（参考 Aider do_replace 思路，自写） -----------------
@@ -407,3 +416,20 @@ def _diff(old: str, new: str, path: str) -> str:
         fromfile=f"{path} (before)", tofile=f"{path} (after)", lineterm="",
     )
     return "\n".join(diff)
+
+
+def _lint_file(path: str, workspace: str) -> str:
+    """Aider 风格：编辑后自动检查 Python 语法。"""
+    if not path.endswith(".py"):
+        return ""
+    try:
+        full_path = Path(workspace) / path
+        if not full_path.exists():
+            return ""
+        text = full_path.read_text(encoding="utf-8")
+        ast.parse(text)
+        return ""
+    except SyntaxError as e:
+        return f"Lint: Syntax error at line {e.lineno}: {e.msg}"
+    except Exception as e:
+        return f"Lint: {e}"

@@ -72,9 +72,20 @@ def test_truncate_output_long():
     text = "A" * 5000
     out = context.truncate_output(text, head=100, tail=50)
     assert len(out) < 300
-    assert "已省略" in out
+    assert "omitted" in out or "truncated" in out
     assert out.startswith("A" * 100)
     assert out.endswith("A" * 50)
+
+
+def test_truncate_output_saves_to_file(tmp_path):
+    """OpenHands 风格：截断时保存完整内容到文件。"""
+    text = "X" * 5000
+    out = context.truncate_output(text, head=100, tail=50, save_dir=str(tmp_path), tool_prefix="bash")
+    assert "truncated" in out.lower()
+    # 检查文件是否保存在 .chisel/truncated/ 下
+    saved = list((tmp_path / ".chisel" / "truncated").glob("*"))
+    assert len(saved) >= 1
+    assert saved[0].read_text(encoding="utf-8") == text
 
 
 def test_compress_noop_when_under_limit():

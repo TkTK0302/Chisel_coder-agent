@@ -1,27 +1,55 @@
 """上下文管理：长输出截断 + 超限压缩。
 
 设计来源（借鉴思路，自写）：
-  - 长命令输出的"头尾截断 + 省略标记"：OpenHands action_execution_server 的输出截断。
-  - 超限时的"确定性折叠"：Cline basic-compaction —— 保留 system/计划/用户任务
-    （前 pinned 条，默认 3 条），整组删除最老的"完整工具回合"
-    （一条带 tool_calls 的 assistant 消息 + 紧随其后的全部 tool 消息），
-    **同存同删**，绝不留孤立 tool 消息、绝不半轮截断。
-  - 仍超限时的 LLM 摘要：Aider ChatSummary —— 把最老的完整回合压缩成一条摘要。
+  - 长命令输出的"头尾截断 + 完整内容保存到文件"：OpenHands maybe_truncate。
+  - 超限时的"确定性折叠"：Cline basic-compaction。
+  - 仍超限时的 LLM 摘要：Aider ChatSummary。
 """
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Any
 
 
-def truncate_output(text: str, head: int = 3000, tail: int = 1500) -> str:
-    """长输出头尾截断，中间用省略标记，防止几百行报错/编译日志挤爆上下文。"""
+def truncate_output(
+    text: str,
+    head: int = 3000,
+    tail: int = 1500,
+    save_dir: str | None = None,
+    tool_prefix: str = "output",
+) -> str:
+    """长输出头尾截断，完整内容保存到文件（OpenHands 风格）。
+
+    如果 save_dir 指定了目录，截断时把完整内容保存到
+    .chisel/truncated/ 下，并在省略标记中告诉 AI 文件路径。
+    AI 可以后续用 read_file 查看完整内容。
+    """
     if not isinstance(text, str):
         text = str(text)
     if len(text) <= head + tail:
         return text
     omitted = len(text) - head - tail
-    return text[:head] + f"\n[... 已省略 {omitted} 字符 ...]\n" + text[-tail:]
+
+    # 保存完整内容到文件
+    file_path = None
+    if save_dir:
+        trunc_dir = Path(save_dir) / ".chisel" / "truncated"
+        trunc_dir.mkdir(parents=True, exist_ok=True)
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+        filename = f"{tool_prefix}_output_{content_hash}.txt"
+        save_path = trunc_dir / filename
+        if not save_path.exists():
+            save_path.write_text(text, encoding="utf-8")
+        file_path = save_path
+
+    notice = (
+        f"\n[Output truncated. Full content saved to {file_path}]\n"
+        if file_path
+        else f"\n[... {omitted} chars omitted ...]\n"
+    )
+    return text[:head] + notice + text[-tail:]
 
 
 def _round_trip_span(messages: list[dict], i: int) -> tuple[int, int] | None:

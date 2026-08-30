@@ -241,8 +241,10 @@ class Agent:
                 if name not in ("plan", "attempt_completion"):
                     ctx.loop.note_call(name, args)
                 ctx.mistake.track(result)
-                # 长结果截断后再回填，防止报错日志挤爆上下文
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": ctx.context.truncate_output(result)})
+                # 长结果截断后再回填（OpenHands 风格：保存完整内容到文件）
+                messages.append({"role": "tool", "tool_call_id": tc.id,
+                                 "content": ctx.context.truncate_output(
+                                     result, save_dir=self.workspace, tool_prefix=name)})
 
             # ---- 检测 attempt_completion（显式完成信号） ----
             if getattr(ctx, "_completion_result", None):

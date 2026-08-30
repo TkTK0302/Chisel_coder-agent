@@ -62,33 +62,61 @@ class LoopGuard:
 
 
 class MistakeTracker:
-    """连续错误追踪：工具结果频繁出现错误特征时提醒换策略。"""
+    """连续错误追踪（Cline 风格：分 3 种类型）。
+
+    错误类型：
+      - api_error：API 连接/限流错误
+      - invalid_tool_call：工具参数错误
+      - tool_execution_failed：工具执行失败
+    """
 
     def __init__(self, soft: int = 3, hard: int = 5):
         self.soft = soft
         self.hard = hard
-        self._consecutive = 0
+        self._errors: dict[str, int] = {
+            "api_error": 0,
+            "invalid_tool_call": 0,
+            "tool_execution_failed": 0,
+        }
         self._warnings: list[str] = []
 
+    def _classify(self, result: str) -> str | None:
+        """对错误结果分类。返回 None 表示无错误。"""
+        if not isinstance(result, str):
+            return None
+        if any(kw in result for kw in ["APIConnectionError", "APIError", "RateLimit", "Timeout", "ConnectionError"]):
+            return "api_error"
+        if any(kw in result for kw in ["Invalid JSON", "unknown tool", "missing required", "not found"]):
+            return "invalid_tool_call"
+        if any(kw in result for kw in ["Tool execution error", "Access denied", "edit_file failed",
+                                        "Error:", "Traceback", "Exception", "FAILED", "AssertionError"]):
+            return "tool_execution_failed"
+        return None
+
     def track(self, result: str) -> None:
-        if isinstance(result, str) and _ERROR_RE.search(result):
-            self._consecutive += 1
+        cls = self._classify(result)
+        if cls:
+            self._errors[cls] += 1
+            # 任意类型达到 hard 阈值就触发
+            total = sum(self._errors.values())
+            if total == self.soft:
+                details = "; ".join(f"{k}={v}" for k, v in self._errors.items() if v > 0)
+                self._warnings.append(
+                    f"Detected {total} consecutive errors ({details}). "
+                    f"Stop and analyze the root cause: use read_file to check "
+                    f"actual file content, verify assumptions, and try a different approach."
+                )
+            if total >= self.hard:
+                self._warnings.append(
+                    f"Detected {total} consecutive errors, cannot continue. "
+                    f"Task will be stopped (changes preserved in workspace)."
+                )
         else:
-            self._consecutive = 0
-        if self._consecutive == self.soft:
-            self._warnings.append(
-                f"已连续出现 {self._consecutive} 次错误/失败。请停下分析根因："
-                f"用 read_file 确认文件实际内容、检查假设是否错误，换一种策略，"
-                f"而不是继续尝试相似的操作。"
-            )
-        if self._consecutive == self.hard:
-            self._warnings.append(
-                f"已连续 {self._consecutive} 次错误，系统判定无法继续推进，将停止任务"
-                f"（工作区修改保留）。"
-            )
+            for k in self._errors:
+                self._errors[k] = 0
 
     def should_abort(self) -> bool:
-        return self._consecutive >= self.hard
+        return sum(self._errors.values()) >= self.hard
 
     def drain_warnings(self) -> list[str]:
         w, self._warnings = self._warnings, []

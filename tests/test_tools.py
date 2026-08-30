@@ -176,6 +176,29 @@ def test_edit_append_empty_original(tmp_path):
     assert "y = 2" in (tmp_path / "a.py").read_text(encoding="utf-8")
 
 
+def test_lint_valid_python(tmp_path):
+    """Aider 风格：编辑后自动 lint，有效 Python 无 lint 消息。"""
+    _write(tmp_path, "calc.py", "def add(x, y): return x + y\n")
+    r = tools.execute_tool("edit_file", {
+        "path": "calc.py",
+        "original_lines": "def add(x, y): return x + y",
+        "updated_lines": "def add(x, y):\n    return x + y\n",
+    }, str(tmp_path))
+    assert "Lint" not in r  # 有效 Python 不报 lint
+
+
+def test_lint_invalid_python_shows_error(tmp_path):
+    """编辑后自动 lint，语法错误会显示。"""
+    _write(tmp_path, "bug.py", "x = 1\n")
+    r = tools.execute_tool("edit_file", {
+        "path": "bug.py",
+        "original_lines": "x = 1",
+        "updated_lines": "x = 1\ndef f(\n",
+    }, str(tmp_path))
+    assert "Lint" in r
+    assert "Syntax error" in r
+
+
 def test_unknown_tool():
     r = tools.execute_tool("nope", {}, ".")
     assert "Unknown tool" in r
