@@ -1,18 +1,22 @@
-"""计划系统：显式任务拆解 + 进度追踪 + 依赖管理 + 审批。
+"""计划系统：显式任务拆解 + 进度追踪 + 依赖管理 + 审批 + 持久化 + 可视化。
 
 两种模式共享同一个 PlanTracker：
-  - Cline 模式（小项目）：同一 AI 先 Plan（只读+审批）后 Act（执行）
-  - OpenHands 模式（大项目）：PlannerAgent 规划 + CodeActAgent 执行，双 AI
+  - single 模式：同一 AI 先 Plan（只读+审批）后 Act（执行）
+  - multi 模式：Planning Agent 规划 + 审批 → delegate 子 Agent 执行
 
-设计来源：
-  - 状态机 + 依赖注入来自 OpenHands Plan/PlanTask/PlanProgress
-  - 审批环节来自 Cline Plan/Act 模式
-  - 自写实现，不依赖外部代码
+5 个优化全部实现：
+  1. 可视化进度条 + 依赖图
+  2. 计划持久化到 .chisel/plan.json
+  3. 自动完成摘要
+  4. 拒绝时收集原因
+  5. 任务重排序
 """
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
-from typing import Literal
+from pathlib import Path
 
 from tools import register_tool
 
@@ -24,25 +28,17 @@ class PlanTask:
     id: str
     description: str
     status: str = "pending"
-    depends_on: list[str] = field(default_factory=list)  # 前置任务 ID 列表
-    notes: str = ""  # 完成时的备注
+    depends_on: list[str] = field(default_factory=list)
+    notes: str = ""
 
 
 class PlanTracker:
-    """计划追踪器，两种模式共用。
-
-    Cline 模式流程：
-      create(待审批) → approve() → AI 执行 → update()
-
-    OpenHands 模式流程：
-      PlannerAgent create(含依赖) → CodeActAgent 执行 → 遇阻 replan
-    """
-
     def __init__(self):
         self.tasks: list[PlanTask] = []
         self.created = False
-        self.approved = False  # Cline 审批标记
-        self.mode: str = "single"  # single | multi
+        self.approved = False
+        self.mode: str = "single"
+        self._rejection_reason: str = ""  # 第 4 项：拒绝原因
 
     # --- 创建与更新 ----------------------------------------------------------
 
@@ -52,7 +48,6 @@ class PlanTracker:
         self.approved = False
 
     def create(self, tasks: list[dict]) -> str:
-        """创建计划。tasks: [{id, description, status, depends_on}]"""
         cleaned: list[PlanTask] = []
         for t in tasks:
             tid = str(t.get("id", "")).strip()
@@ -65,7 +60,6 @@ class PlanTracker:
             if not tid or not desc:
                 return "plan: each task requires non-empty id and description"
             cleaned.append(PlanTask(id=tid, description=desc, status=status, depends_on=deps, notes=notes))
-        # 校验依赖存在性
         ids = {t.id for t in cleaned}
         for t in cleaned:
             for dep in t.depends_on:
@@ -74,17 +68,19 @@ class PlanTracker:
         self.tasks = cleaned
         self.created = True
         self.approved = False
+        if self._all_done():
+            self._finalize_summary()
+        self._persist()
         return f"Plan created: {len(cleaned)} subtasks. Waiting for approval..."
 
     def approve(self) -> str:
-        """用户批准计划（Cline 模式）。"""
         if not self.tasks:
             return "plan: no plan to approve."
         self.approved = True
+        self._persist()
         return "Plan approved."
 
     def update(self, tasks: list[dict]) -> str:
-        """更新进度。"""
         if not self.tasks:
             return "plan: no plan yet, use action=create first."
         by_id = {t.id: t for t in self.tasks}
@@ -101,52 +97,147 @@ class PlanTracker:
             notes = t.get("notes", "")
             if notes:
                 by_id[tid].notes = str(notes).strip()
+        self._persist()
+        if self._all_done():
+            self._finalize_summary()
         return "Plan updated."
 
     def note(self, task_id: str, notes: str) -> str:
-        """给任务添加备注（OpenHands 风格）。"""
         if task_id not in {t.id for t in self.tasks}:
             return f"plan: task {task_id!r} not found."
         for t in self.tasks:
             if t.id == task_id:
                 t.notes = notes
+                self._persist()
                 return f"Notes added to task {task_id}."
         return ""
 
+    def reorder(self, tasks: list[dict]) -> str:
+        """第 5 项：重新排列任务顺序和依赖关系。"""
+        if not self.tasks:
+            return "plan: no plan yet."
+        # 验证所有 task id 存在
+        existing_ids = {t.id for t in self.tasks}
+        for t in tasks:
+            tid = str(t.get("id", "")).strip()
+            if tid not in existing_ids:
+                return f"plan: reorder failed, task {tid!r} not found."
+        # 重建任务列表（按新顺序 + 更新依赖）
+        new_tasks = []
+        seen = set()
+        for t in tasks:
+            tid = str(t.get("id", "")).strip()
+            if tid in seen:
+                continue
+            seen.add(tid)
+            old = next(ot for ot in self.tasks if ot.id == tid)
+            new_deps = [str(d).strip() for d in t.get("depends_on", []) if str(d).strip()]
+            # 验证新依赖都在新任务列表里
+            for d in new_deps:
+                if d not in {x.get("id", "") for x in tasks} and d not in existing_ids:
+                    return f"plan: reorder failed, new dependency {d!r} unknown."
+            old.depends_on = new_deps
+            new_tasks.append(old)
+        # 追加未在 reorder 中的任务
+        for t in self.tasks:
+            if t.id not in seen:
+                new_tasks.append(t)
+        self.tasks = new_tasks
+        self._persist()
+        return f"Plan reordered: {len(self.tasks)} tasks."
+
     def blocked_by(self) -> list[str]:
-        """返回所有因依赖未满足而 blocked 的任务 ID。"""
         done_ids = {t.id for t in self.tasks if t.status in ("done", "verified")}
         return [t.id for t in self.tasks if t.status != "blocked"
                 and any(d not in done_ids for d in t.depends_on)]
 
-    # --- 渲染 --------------------------------------------------------------
+    def _all_done(self) -> bool:
+        return bool(self.tasks) and all(t.status in ("done", "verified") for t in self.tasks)
+
+    # --- 第 2 项：持久化 -----------------------------------------------------
+
+    def _persist(self) -> None:
+        """保存计划到 .chisel/plan.json。"""
+        if not self.tasks:
+            return
+        plan_dir = Path(self._workspace()) / ".chisel"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        path = plan_dir / "plan.json"
+        data = {
+            "tasks": self.to_dict(),
+            "approved": self.approved,
+            "mode": self.mode,
+        }
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _workspace(self) -> str:
+        """从调用栈推断工作目录（持久化用）。"""
+        import traceback
+        for frame in traceback.extract_stack():
+            locs = getattr(frame, 'locals', None)
+            if locs and "workspace" in locs:
+                ws = locs.get("workspace", ".")
+                if ws:
+                    return str(ws)
+        return "."
+
+    # --- 第 3 项：完成摘要 ---------------------------------------------------
+
+    _summary: str = ""
+
+    def _finalize_summary(self) -> None:
+        """所有任务完成时自动生成摘要。"""
+        if not self._all_done() or not self.tasks:
+            return
+        lines = ["Task Summary:"]
+        for t in self.tasks:
+            note = f" → {t.notes}" if t.notes else ""
+            dep = f" (depends: {t.depends_on})" if t.depends_on else ""
+            lines.append(f"  [{t.status}] {t.id}: {t.description}{dep}{note}")
+        lines.append(f"  Total: {len(self.tasks)} tasks completed.")
+        self._summary = "\n".join(lines)
+
+    def finalize(self) -> str:
+        """生成最终摘要并返回。"""
+        if self._all_done() and not self._summary:
+            self._finalize_summary()
+        if self._summary:
+            return self._summary
+        if not self.tasks:
+            return "No plan was created."
+        done = sum(1 for t in self.tasks if t.status in ("done", "verified"))
+        return f"Plan finalized: {done}/{len(self.tasks)} tasks completed."
+
+    # --- 第 1 项：可视化渲染 -------------------------------------------------
 
     def to_text(self) -> str:
         if not self.tasks:
             return "Plan: not yet created. Use plan tool with action=create to break down the task."
         done = sum(1 for t in self.tasks if t.status in ("done", "verified"))
         total = len(self.tasks)
-        lines = []
+        # 进度条
+        bar_len = 12
+        filled = int(bar_len * done / total) if total > 0 else 0
+        bar = "█" * filled + "░" * (bar_len - filled)
+        lines = [f"  [{bar}] {done}/{total} tasks completed"]
+        lines.append("")
         for t in self.tasks:
-            dep_str = f" ⛔ depends: {t.depends_on}" if t.depends_on else ""
+            icon = {"done": "✓", "verified": "✓", "in_progress": "▶",
+                    "pending": "⏳", "blocked": "⛔"}.get(t.status, "?")
+            dep_str = f"  ← {t.depends_on}" if t.depends_on else ""
             note_str = f"  → {t.notes}" if t.notes else ""
-            lines.append(f"  [{t.status:>4}] {t.id}: {t.description}{dep_str}{note_str}")
+            lines.append(f"  [{icon}] {t.id}: {t.description}{dep_str}{note_str}")
         header = "Plan (update progress with plan action=update):"
         footer = f"Progress: {done}/{total}"
         phase = " [PLAN PHASE - read only]" if not self.approved else ""
         return f"{header}{phase}\n" + "\n".join(lines) + f"\n{footer}"
 
     def inject(self, messages: list[dict]) -> None:
-        """把当前计划原位写回 messages[1]。"""
         while len(messages) < 2:
             messages.append({"role": "system", "content": ""})
         messages[1] = {"role": "system", "content": self.to_text()}
 
-    def finalize(self) -> None:
-        pass
-
     def to_dict(self) -> list[dict]:
-        """OpenHands 模式：导出计划给 CodeActAgent 使用。"""
         return [
             {"id": t.id, "description": t.description, "status": t.status,
              "depends_on": t.depends_on, "notes": t.notes}
@@ -163,13 +254,14 @@ PLAN_SCHEMA = {
         "description": "Create or update the task breakdown for the current assignment. "
                        "Call action=create at the start to decompose the task, "
                        "action=update to mark progress, "
-                       "action=approve to confirm the plan (Cline mode). "
+                       "action=reorder to rearrange tasks or change dependencies, "
+                       "action=approve to confirm the plan. "
                        "Use depends_on to specify task dependencies. "
                        "The current plan is automatically injected into your context.",
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["create", "update", "approve", "note"]},
+                "action": {"type": "string", "enum": ["create", "update", "approve", "note", "reorder"]},
                 "tasks": {
                     "type": "array",
                     "items": {
@@ -202,27 +294,18 @@ def _handle_plan(ctx, args: dict) -> str:
         result = plan.create(tasks)
         if not result.startswith("Plan created"):
             return result
-        # 两种模式都走审批环节
-        if plan.mode == "multi":
-            # Multi mode: planner asks user, then proceeds
-            if ctx.ask:
-                summary = "\n".join(f"  [{t['status']}] {t['id']}: {t['description']}"
-                                   for t in tasks)
-                approval = ctx.ask(
-                    f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}"
-                )
-                if approval and any(kw in approval.lower() for kw in ["no", "not", "dis", "reject", "revise"]):
-                    return "Plan not approved. Please revise the plan."
-                plan.approve()
-                return "Plan approved. You may now delegate tasks to sub-agents."
-        elif ctx.ask:
+        # 审批环节（第 4 项：拒绝时收集原因）
+        if ctx.ask:
             summary = "\n".join(f"  [{t['status']}] {t['id']}: {t['description']}"
                                for t in tasks)
             approval = ctx.ask(
-                f"The following plan has been created. Approve and start execution?\n{summary}"
+                f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}"
             )
             if approval and any(kw in approval.lower() for kw in ["no", "not", "dis", "reject", "revise"]):
-                return "Plan not approved. Please revise the plan."
+                # 收集拒绝原因
+                reason = ctx.ask("Please explain why the plan needs revision, so I can improve it.")
+                plan._rejection_reason = reason or "No reason given."
+                return f"Plan not approved. Feedback: {plan._rejection_reason}"
             plan.approve()
             return "Plan approved and ready for execution."
         return result
@@ -237,7 +320,10 @@ def _handle_plan(ctx, args: dict) -> str:
     if action == "note":
         return plan.note(args.get("task_id", ""), args.get("notes", ""))
 
-    return f"plan: unknown action {action!r}, expected create/update/approve/note"
+    if action == "reorder":
+        return plan.reorder(tasks)
+
+    return f"plan: unknown action {action!r}, expected create/update/approve/note/reorder"
 
 
 register_tool(PLAN_SCHEMA, _handle_plan)
