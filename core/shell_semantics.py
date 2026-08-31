@@ -27,12 +27,22 @@ _DOWNLOAD_CMDS = {"curl", "wget", "fetch"}
 _EXEC_CMDS = {"bash", "sh", "zsh", "python", "perl", "ruby"}
 _DESTRUCTIVE_CMDS = {"rm", "dd", "mkfs", "format", "shutdown", "reboot", "poweroff"}
 _SENSITIVE_PATHS = {"/etc", "/bin", "/boot", "/dev/sda", "/dev/sdb", "/var/log"}
+_PROTECTED_PATTERNS = [
+    r"\.git[/\\]",
+    r"\.env[^.]*$",
+    r"\.vscode[/\\]",
+    r"\.ssh[/\\]",
+    r"\.gitignore$",
+    r"node_modules[/\\]",
+    r"__pycache__[/\\]",
+    r"\.pytest_cache[/\\]",
+]
 
 
 def analyze_command(command: str) -> tuple[str, str]:
     """分析命令安全风险，返回 (risk_level, reason)。
 
-    risk_level: LOW / MEDIUM / HIGH
+    risk_level: LOW / MEDIUM / HIGH / CRITICAL
     """
     # 1) 用 tree-sitter 解析 AST 结构
     if _HAVE_TS:
@@ -105,14 +115,27 @@ def _get_cmd_args(node) -> list[str]:
 
 def _analyze_regex(command: str) -> tuple[str, str]:
     """正则降级分析。"""
+    # 检查是否涉及受保护路径
+    import re
+    for pat in _PROTECTED_PATTERNS:
+        if re.search(pat, command, re.IGNORECASE):
+            return ("CRITICAL", f"Command targets protected resource: {pat}")
+
     # 检查 "下载 | 执行" 组合
     if re.search(r"(curl|wget)\s+.*\|\s*(bash|sh|python)", command):
         return ("HIGH", "Download and execute remote script")
+    # 检查 find -delete
+    if re.search(r"find\s+.*\s+-delete", command):
+        return ("HIGH", "Bulk file deletion via find -delete")
+    if re.search(r"find\s+.*\s+-exec\s*rm", command):
+        return ("HIGH", "Bulk file deletion via find exec rm")
     # 检查危险命令
-    if re.search(r"\brm\s+-rf?\s+/", command):
-        return ("HIGH", "Recursive delete on root filesystem")
+    if re.search(r"\brm\s+-rf?\s+(/etc\b|/bin\b|/boot\b|/dev\b|/home\b|/root\b|/var\b|/usr\b|/lib\b|/proc\b|/sys\b)", command):
+        return ("CRITICAL", "Recursive delete on system directory")
+    if re.search(r"\brm\s+-rf?\s+\.", command):
+        return ("HIGH", "Recursive delete in current directory")
     if re.search(r"\bdd\s+if=.*of=/dev/(sd|hd|nvme)", command):
-        return ("HIGH", "Write directly to disk device")
+        return ("CRITICAL", "Write directly to disk device")
     if re.search(r"\b(shutdown|reboot|poweroff)\b", command):
         return ("HIGH", "System shutdown or reboot")
     return ("LOW", "")

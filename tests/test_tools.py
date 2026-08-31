@@ -26,8 +26,8 @@ def test_dangerous_patterns_regression():
         "Remove-Item -Recurse C:\\x",
         "mkfs.ext4 /dev/sda1",
     ]:
-        risk, desc = analyzer.assess(cmd)
-        assert risk.value in ("HIGH", "MEDIUM"), f"应判定为高风险: {cmd}"
+        risk, desc, _ = analyzer.assess(cmd)
+        assert risk.value in ("HIGH", "MEDIUM", "CRITICAL"), f"应判定为高风险: {cmd}"
 
 
 def test_medium_risk_patterns():
@@ -41,20 +41,20 @@ def test_medium_risk_patterns():
         "pip install requests",
         "npm install express",
     ]:
-        risk, desc = analyzer.assess(cmd)
+        risk, desc, _ = analyzer.assess(cmd)
         assert risk.value == "MEDIUM", f"应判定为中风险: {cmd}"
 
 
 def test_dev_null_not_dangerous():
     analyzer = SecurityAnalyzer(interactive=False)
-    risk, _ = analyzer.assess("python run.py 2>/dev/null")
+    risk, _, _ = analyzer.assess("python run.py 2>/dev/null")
     assert risk.value == "LOW", "/dev/null 不应被判定为危险"
 
 
 def test_safe_commands_low_risk():
     analyzer = SecurityAnalyzer(interactive=False)
     for cmd in ["ls -la", "python test.py", "cat file.txt", "grep -r foo ."]:
-        risk, _ = analyzer.assess(cmd)
+        risk, _, _ = analyzer.assess(cmd)
         assert risk.value == "LOW", f"安全命令应判定为低风险: {cmd}"
 
 

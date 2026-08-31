@@ -1,9 +1,9 @@
-"""确认策略（匹配 OpenHands ConfirmationPolicy 架构）。
+"""确认策略（四级风险：LOW / MEDIUM / HIGH / CRITICAL）。
 
 三种策略：
   - AlwaysConfirm：全部确认
   - NeverConfirm：全部放行（不推荐）
-  - ConfirmRisky：按风险阈值确认（默认 HIGH 以上才问）
+  - ConfirmRisky：按风险阈值确认（默认 HIGH 以上才问，CRITICAL 永远确认）
 """
 from __future__ import annotations
 
@@ -34,6 +34,9 @@ class ConfirmRisky(ConfirmationPolicy):
         self.confirm_unknown = confirm_unknown
 
     def should_confirm(self, risk: SecurityRisk = SecurityRisk.UNKNOWN) -> bool:
+        # CRITICAL 永远需要确认，不受阈值控制
+        if risk == SecurityRisk.CRITICAL:
+            return True
         if risk == SecurityRisk.UNKNOWN:
             return self.confirm_unknown
         return risk.is_riskier(self.threshold)
