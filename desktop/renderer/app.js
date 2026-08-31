@@ -477,37 +477,72 @@ async function refreshTaskHistory() {
     let currentRequest = '';
     for (const m of messages) {
       if (m.role === 'user') {
-        currentRequest = m.content.substring(0, 80) + (m.content.length > 80 ? '...' : '');
+        currentRequest = m.content;
       } else if (m.role === 'assistant' && currentRequest) {
+        // Extract structured actions from agent output
         const actions = [];
+        let result = 'Unknown';
         const lines = (m.content || '').split('\n');
         for (const line of lines) {
           const s = line.trim();
-          if (s.startsWith('Edited ') || s.startsWith('Written ') || s.startsWith('Created ')) {
-            actions.push(s.substring(0, 100));
-          } else if (s.startsWith('Read file:') || s.startsWith('File not found') || s.startsWith('Lint:')) {
-            actions.push(s.substring(0, 100));
-          } else if (s.startsWith('✅') || s.startsWith('Task completed') || s.startsWith('**总结')) {
-            actions.push(s.substring(0, 100));
+          // File operations
+          if (s.startsWith('Edited ')) {
+            const file = s.replace('Edited ', '').split(' ')[0];
+            actions.push('modify_file: ' + file);
+          } else if (s.startsWith('Written ') || s.startsWith('Created ')) {
+            const file = s.replace('Written ', '').replace('Created ', '').split(' ')[0];
+            actions.push('create_file: ' + file);
+          } else if (s.startsWith('Read file:')) {
+            const file = s.replace('Read file:', '').trim().split(' ')[0];
+            actions.push('read_file: ' + file);
+          } else if (s.startsWith('File not found') || s.startsWith('Lint:')) {
+            actions.push('analyze_error: ' + s.substring(0, 80));
+          } else if (s.startsWith('✅') || s.startsWith('Task completed')) {
+            result = 'Success';
+          } else if (s.startsWith('⚠️') || s.startsWith('Error:')) {
+            result = 'Failed';
           }
         }
+        // Summarize the user request
+        const summary = summarizeRequest(currentRequest);
         if (actions.length > 0 || currentRequest) {
-          tasks.push({ request: currentRequest, actions: actions.slice(0, 8) });
+          tasks.push({
+            summary: summary,
+            actions: actions.slice(0, 6),
+            result: result,
+            request: currentRequest.substring(0, 60) + (currentRequest.length > 60 ? '...' : '')
+          });
         }
         currentRequest = '';
       }
     }
     if (tasks.length === 0) {
-      el.innerHTML = '<div class="task-item" style="color:var(--text2)">No tasks recorded yet.</div>';
+      el.innerHTML = '<div class="task-item" style="color:var(--text2);padding:12px">No tasks recorded yet.</div>';
     } else {
       el.innerHTML = tasks.slice(-10).reverse().map(t => `
         <div class="task-item">
-          <div class="task-request">${esc(t.request)}</div>
-          <div class="task-actions">${t.actions.map(a => '<span>• ' + esc(a) + '</span>').join('')}</div>
+          <div class="task-request">📋 ${esc(t.summary)}</div>
+          <div class="task-meta" style="color:var(--text2);font-size:11px;margin-top:2px">${esc(t.request)}</div>
+          <div class="task-actions">${t.actions.map(a => {
+            const [type, ...rest] = a.split(': ');
+            const icon = type === 'modify_file' ? '✏️' : type === 'create_file' ? '📄' : type === 'read_file' ? '👁️' : type === 'analyze_error' ? '🔍' : '⚙️';
+            return '<span>' + icon + ' ' + esc(a) + '</span>';
+          }).join('')}</div>
+          <div class="task-result" style="font-size:12px;margin-top:4px;color:${t.result === 'Success' ? 'var(--success)' : 'var(--danger)'}">${t.result === 'Success' ? '✅ 成功' : '❌ 失败'}</div>
         </div>
       `).join('');
     }
   } catch(e) { toast('Failed to load tasks'); }
+}
+
+function summarizeRequest(text) {
+  // Simple heuristic to extract core action
+  let s = text.trim();
+  // Remove common prefixes
+  s = s.replace(/^(请|帮我|我需要你|麻烦你|帮我|给我)\s*/i, '');
+  // Truncate to reasonable length
+  if (s.length > 50) s = s.substring(0, 50) + '...';
+  return s;
 }
 
 // ===== Status Bar =====
@@ -548,6 +583,8 @@ sendMessage = async function() {
 let resizeTarget = null;
 let resizeStartX = 0;
 let resizeStartWidth = 0;
+let resizeStartY = 0;
+let resizeStartHeight = 0;
 
 function startResize(target, event) {
   resizeTarget = target;
@@ -559,16 +596,37 @@ function startResize(target, event) {
   event.preventDefault();
 }
 
+function startResizeH(event) {
+  resizeTarget = 'tree';
+  resizeStartY = event.clientY;
+  resizeStartHeight = document.getElementById('fileTree').offsetHeight;
+  document.getElementById('rpTreeHandle').classList.add('active');
+  document.addEventListener('mousemove', doResize);
+  document.addEventListener('mouseup', stopResize);
+  event.preventDefault();
+}
+
 function doResize(event) {
-  if (resizeTarget !== 'right') return;
-  const diff = resizeStartX - event.clientX;
-  const newWidth = Math.max(200, Math.min(600, resizeStartWidth + diff));
-  document.getElementById('rightPanel').style.width = newWidth + 'px';
+  if (resizeTarget === 'right') {
+    const diff = resizeStartX - event.clientX;
+    const newWidth = Math.max(200, Math.min(600, resizeStartWidth + diff));
+    document.getElementById('rightPanel').style.width = newWidth + 'px';
+  } else if (resizeTarget === 'tree') {
+    const diff = event.clientY - resizeStartY;
+    const tree = document.getElementById('fileTree');
+    const code = document.getElementById('fileCode');
+    const total = tree.parentElement.offsetHeight - document.getElementById('rpTreeHandle').offsetHeight;
+    const newTree = Math.max(80, Math.min(total - 80, resizeStartHeight + diff));
+    tree.style.height = newTree + 'px';
+    tree.style.flex = 'none';
+    code.style.flex = '1';
+  }
 }
 
 function stopResize() {
   resizeTarget = null;
   document.getElementById('rightHandle').classList.remove('active');
+  document.getElementById('rpTreeHandle').classList.remove('active');
   document.removeEventListener('mousemove', doResize);
   document.removeEventListener('mouseup', stopResize);
 }
