@@ -215,25 +215,39 @@ async function uploadFile() {
       if (!paths) return;
       for (const p of paths) {
         const name = p.split(/[/\\]/).pop();
-        await api('upload_file', state.currentProject.id, p, name);
+        const resp = await fetch('file://' + p);
+        const blob = await resp.blob();
+        const reader = new FileReader();
+        reader.readAsDataURL(blob);
+        await new Promise(resolve => { reader.onload = async () => {
+          const b64 = reader.result.split(',')[1];
+          await api('upload_file', state.currentProject.id, name, b64);
+          resolve();
+        };});
       }
     } else {
       document.getElementById('fileInput').click();
     }
     await refreshFiles();
     toast('Files uploaded');
-  } catch (e) { toast('Failed to upload files'); }
+  } catch (e) { toast('Failed to upload files: ' + e.message); }
 }
 
 async function uploadFilesToProject(event) {
   if (!state.currentProject) return;
   try {
     for (const file of event.target.files) {
-      await api('upload_file', state.currentProject.id, file.path, file.name);
+      const reader = new FileReader();
+      const b64 = await new Promise((resolve, reject) => {
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      await api('upload_file', state.currentProject.id, file.name, b64);
     }
     await refreshFiles();
     toast('Files uploaded');
-  } catch (e) { toast('Failed to upload files'); }
+  } catch (e) { toast('Failed to upload files: ' + e.message); }
 }
 
 // ===== Utils =====

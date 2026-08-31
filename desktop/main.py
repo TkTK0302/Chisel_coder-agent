@@ -83,15 +83,20 @@ def list_files(project_id: str):
     return json.dumps(db.list_files(project_id))
 
 @eel.expose
-def upload_file(project_id: str, filepath: str, filename: str):
+def upload_file(project_id: str, filename: str, content_base64: str):
+    """上传文件（通过 base64 内容，兼容浏览器安全限制）。"""
+    import base64
     p = db.get_project(project_id)
     if not p:
         return json.dumps({"error": "Not found"})
     ws = Path(p["workspace"])
     ws.mkdir(parents=True, exist_ok=True)
     dest = ws / filename
-    shutil.copy2(filepath, dest)
-    size = dest.stat().st_size
+    data = base64.b64decode(content_base64)
+    dest.write_bytes(data)
+    size = len(data)
+    db.add_file(project_id, filename, str(dest), size)
+    return json.dumps({"filename": filename, "size": size})
     db.add_file(project_id, filename, str(dest), size)
     return json.dumps({"filename": filename, "size": size})
 
