@@ -481,11 +481,10 @@ async function refreshTaskHistory() {
       } else if (m.role === 'assistant' && currentRequest) {
         // Extract structured actions from agent output
         const actions = [];
-        let result = 'Unknown';
+        let result = 'Success';
         const lines = (m.content || '').split('\n');
         for (const line of lines) {
           const s = line.trim();
-          // File operations
           if (s.startsWith('Edited ')) {
             const file = s.replace('Edited ', '').split(' ')[0];
             actions.push('modify_file: ' + file);
@@ -497,8 +496,6 @@ async function refreshTaskHistory() {
             actions.push('read_file: ' + file);
           } else if (s.startsWith('File not found') || s.startsWith('Lint:')) {
             actions.push('analyze_error: ' + s.substring(0, 80));
-          } else if (s.startsWith('✅') || s.startsWith('Task completed')) {
-            result = 'Success';
           } else if (s.startsWith('⚠️') || s.startsWith('Error:')) {
             result = 'Failed';
           }
