@@ -583,6 +583,7 @@ function updateStatusBar() {
 
 // ===== Question Polling (for Eel interactive buttons) =====
 let questionPollInterval = null;
+let lastQuestionId = null;
 
 function startQuestionPolling() {
   stopQuestionPolling();
@@ -590,7 +591,8 @@ function startQuestionPolling() {
     if (!state.currentProject) return;
     try {
       const q = await api('check_pending_question', state.currentProject.workspace);
-      if (q && q.question) {
+      if (q && q.question && q.id !== lastQuestionId) {
+        lastQuestionId = q.id;
         stopQuestionPolling();
         showQuestionModal(q.question, q.options || ['是', '否']);
       }
@@ -620,7 +622,8 @@ async function answerQuestion(answer) {
   if (state.currentProject) {
     await api('submit_answer', state.currentProject.workspace, answer);
   }
-  startQuestionPolling();
+  // 等待 2 秒让 agent 处理完再恢复轮询
+  setTimeout(() => startQuestionPolling(), 2000);
 }
 
 // Override sendMessage to start polling

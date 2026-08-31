@@ -24,7 +24,9 @@ def ask_question(workspace: str, question: str, options: list[str] | None = None
     a_file.unlink(missing_ok=True)
 
     # 写入问题
+    q_id = str(time.time())
     data = {
+        "id": q_id,
         "question": question,
         "options": options or ["y", "N"],
         "timestamp": time.time(),
@@ -37,12 +39,15 @@ def ask_question(workspace: str, question: str, options: list[str] | None = None
             try:
                 answer = json.loads(a_file.read_text(encoding="utf-8"))
                 a_file.unlink(missing_ok=True)
+                q_file.unlink(missing_ok=True)  # 删除问题文件
                 return answer.get("answer", "N")
             except Exception:
                 a_file.unlink(missing_ok=True)
+                q_file.unlink(missing_ok=True)
                 return "N"
         time.sleep(0.5)
 
+    q_file.unlink(missing_ok=True)
     return "N"  # 超时默认拒绝
 
 
