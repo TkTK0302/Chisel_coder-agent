@@ -177,11 +177,45 @@ function renderMessages() {
 }
 
 function formatContent(text) {
-  return esc(text)
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\n/g, '<br>');
+  // First escape HTML to prevent XSS
+  const d = document.createElement('div');
+  d.textContent = text;
+  let html = d.innerHTML;
+
+  // Bold: **text** → <strong>text</strong> (must be before escaping other chars)
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  // Inline code: `code` → <code>code</code>
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Code blocks: ```lang\ncode``` → <pre><code>code</code></pre>
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+
+  // Horizontal rules: --- on its own line → <hr>
+  html = html.replace(/^-{3,}$/gm, '<hr>');
+
+  // Tables: simple markdown table to HTML
+  html = html.replace(/^\|(.+)\|$/gm, function(match) {
+    const cells = match.split('|').filter(c => c.trim()).map(c => c.trim());
+    if (cells.every(c => /^[-]+$/.test(c))) return '<hr>'; // separator row
+    const tag = match.includes('---') ? 'th' : 'td';
+    return '<tr>' + cells.map(c => `<${tag}>${c}</${tag}>`).join('') + '</tr>';
+  });
+  html = html.replace(/<tr>.*?<\/tr>/g, function(match) {
+    if (!match.includes('<th>')) return match;
+    return '<thead>' + match + '</thead>';
+  });
+  html = html.replace(/(<thead>.*?<\/thead>)/g, '<table>$1</table>');
+  html = html.replace(/<\/table>\s*<tr>/g, '</table><table><tr>');
+  html = html.replace(/<tr>.*?<\/tr>(?!\s*<tr>)/g, function(match) {
+    if (!match.includes('<table>')) return '<table>' + match + '</table>';
+    return match;
+  });
+
+  // Newlines → <br>
+  html = html.replace(/\n/g, '<br>');
+
+  return html;
 }
 
 async function sendMessage() {
