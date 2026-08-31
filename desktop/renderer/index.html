@@ -21,9 +21,6 @@
       </div>
     </aside>
     <main id="main">
-      <!-- Right Panel Toggle -->
-      <div id="rightPanelToggle" class="rp-toggle" onclick="toggleFileExplorer()" title="File Explorer">📂</div>
-
       <div id="emptyState" class="empty-state">
         <div class="empty-icon">◇</div>
         <h1>Chisel</h1>
@@ -33,16 +30,21 @@
       <div id="chatView" class="chat-view hidden">
         <div class="chat-header">
           <div class="chat-header-left">
-            <h2 id="chatTitle">New Chat</h2>
+            <h2 id="chatTitle" ondblclick="renameChat()" title="Double-click to rename">New Chat</h2>
             <span class="chat-project-name" id="chatProjectName"></span>
-            <button class="btn btn-xs" onclick="changeWorkspace()" title="Change workspace folder">📁</button>
           </div>
           <div class="chat-header-right">
             <button class="btn btn-sm" onclick="showFiles()">📁 Files</button>
+            <button class="btn btn-sm" onclick="toggleFileExplorer()">📂 Workspace</button>
+            <button class="btn btn-sm" onclick="toggleTaskHistory()">📋 Tasks</button>
             <button class="btn btn-sm" onclick="newConversation()">+ New Chat</button>
           </div>
         </div>
         <div class="chat-messages" id="chatMessages"></div>
+        <div id="taskPanel" class="task-panel hidden">
+          <div class="task-header"><span>📋 Task History</span><button class="btn btn-xs" onclick="toggleTaskHistory()">✕</button></div>
+          <div class="task-list" id="taskList"></div>
+        </div>
         <div id="filesPanel" class="files-panel hidden">
           <div class="files-header"><span>Project Files</span><button class="btn btn-sm" onclick="toggleFiles()">✕</button></div>
           <div class="files-list" id="filesList"></div>
@@ -60,7 +62,15 @@
           </div>
         </div>
       </div>
+      <!-- Status Bar -->
+      <div id="statusBar" class="status-bar">
+        <span id="statusModel">Model: deepseek-chat</span>
+        <span id="statusTurns">Turns: 0</span>
+        <span id="statusContext">Context: 0 / 60K</span>
+      </div>
     </main>
+    <!-- Resize Handle -->
+    <div id="rightHandle" class="resize-handle" onmousedown="startResize('right', event)"></div>
     <!-- Right Panel: File Explorer -->
     <aside id="rightPanel" class="right-panel hidden">
       <div class="rp-header">

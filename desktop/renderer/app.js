@@ -18,6 +18,7 @@ async function api(name, ...args) {
       'list_conversations': ['GET', '/api/projects/{0}/conversations'],
       'create_conversation': ['POST', '/api/projects/{0}/conversations', (p, t) => ({title: t})],
       'delete_conversation': ['DELETE', '/api/conversations/{0}'],
+      'rename_conversation': ['POST', '/api/conversations/{0}/rename', (id, title) => ({title: title})],
       'list_messages': ['GET', '/api/conversations/{0}/messages'],
       'send_message': ['POST', '/api/conversations/{0}/messages', (c, msg) => ({content: msg})],
       'list_files': ['GET', '/api/projects/{0}/files'],
@@ -430,6 +431,153 @@ function message_done(msgId) {
     } catch(e) {}
   }, 500);
 }
+
+// ===== Chat Renaming =====
+async function renameChat() {
+  if (!state.currentConv) return;
+  const newName = prompt('Rename chat:', state.currentConv.title);
+  if (!newName || !newName.trim()) return;
+  try {
+    await api('rename_conversation', state.currentConv.id, newName.trim());
+    state.currentConv.title = newName.trim();
+    document.getElementById('chatTitle').textContent = newName.trim();
+    await loadConversations();
+    toast('Chat renamed');
+  } catch(e) { toast('Failed to rename'); }
+}
+
+async function autoRenameChat(convId, message) {
+  const name = message.length > 30 ? message.substring(0, 30) + '...' : message;
+  try {
+    await api('rename_conversation', convId, name);
+    if (state.currentConv && state.currentConv.id === convId) {
+      state.currentConv.title = name;
+      document.getElementById('chatTitle').textContent = name;
+    }
+    await loadConversations();
+  } catch(e) {}
+}
+
+// ===== Task History =====
+async function toggleTaskHistory() {
+  const panel = document.getElementById('taskPanel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden') && state.currentConv) {
+    await refreshTaskHistory();
+  }
+}
+
+async function refreshTaskHistory() {
+  if (!state.currentConv) return;
+  try {
+    const messages = await api('list_messages', state.currentConv.id);
+    const el = document.getElementById('taskList');
+    const tasks = [];
+    let currentRequest = '';
+    for (const m of messages) {
+      if (m.role === 'user') {
+        currentRequest = m.content.substring(0, 80) + (m.content.length > 80 ? '...' : '');
+      } else if (m.role === 'assistant' && currentRequest) {
+        const actions = [];
+        const lines = (m.content || '').split('\n');
+        for (const line of lines) {
+          const s = line.trim();
+          if (s.startsWith('Edited ') || s.startsWith('Written ') || s.startsWith('Created ')) {
+            actions.push(s.substring(0, 100));
+          } else if (s.startsWith('Read file:') || s.startsWith('File not found') || s.startsWith('Lint:')) {
+            actions.push(s.substring(0, 100));
+          } else if (s.startsWith('✅') || s.startsWith('Task completed') || s.startsWith('**总结')) {
+            actions.push(s.substring(0, 100));
+          }
+        }
+        if (actions.length > 0 || currentRequest) {
+          tasks.push({ request: currentRequest, actions: actions.slice(0, 8) });
+        }
+        currentRequest = '';
+      }
+    }
+    if (tasks.length === 0) {
+      el.innerHTML = '<div class="task-item" style="color:var(--text2)">No tasks recorded yet.</div>';
+    } else {
+      el.innerHTML = tasks.slice(-10).reverse().map(t => `
+        <div class="task-item">
+          <div class="task-request">${esc(t.request)}</div>
+          <div class="task-actions">${t.actions.map(a => '<span>• ' + esc(a) + '</span>').join('')}</div>
+        </div>
+      `).join('');
+    }
+  } catch(e) { toast('Failed to load tasks'); }
+}
+
+// ===== Status Bar =====
+function updateStatusBar() {
+  const turnCount = state.messages.filter(m => m.role === 'user').length;
+  document.getElementById('statusTurns').textContent = 'Turns: ' + turnCount;
+  const total = state.messages.reduce((sum, m) => sum + (m.content || '').length, 0);
+  document.getElementById('statusContext').textContent = 'Context: ~' + Math.round(total / 1000) + 'K / 60K';
+}
+
+// ===== Override sendMessage for auto-rename =====
+const _origSend = sendMessage;
+sendMessage = async function() {
+  const input = document.getElementById('messageInput');
+  const text = input.value.trim();
+  if (!text || state.loading || !state.currentConv) return;
+  input.value = ''; autoResize(input);
+  state.messages.push({ role: 'user', content: text });
+  renderMessages();
+  state.loading = true; document.getElementById('sendBtn').disabled = true;
+  try {
+    const result = await api('send_message', state.currentConv.id, text);
+    if (result && result.id) {
+      state.messages.push({ id: result.id, role: 'assistant', content: '⏳ Thinking...' });
+      renderMessages();
+    }
+    const msgs = await api('list_messages', state.currentConv.id);
+    const userMsgs = msgs.filter(m => m.role === 'user');
+    if (userMsgs.length === 1 && state.currentConv && state.currentConv.title === 'New Chat') {
+      await autoRenameChat(state.currentConv.id, text);
+    }
+    updateStatusBar();
+  } catch (e) { toast('Error: ' + e.message); }
+  state.loading = false; document.getElementById('sendBtn').disabled = false;
+};
+
+// ===== Resizable Panels =====
+let resizeTarget = null;
+let resizeStartX = 0;
+let resizeStartWidth = 0;
+
+function startResize(target, event) {
+  resizeTarget = target;
+  resizeStartX = event.clientX;
+  resizeStartWidth = document.getElementById('rightPanel').offsetWidth;
+  document.getElementById('rightHandle').classList.add('active');
+  document.addEventListener('mousemove', doResize);
+  document.addEventListener('mouseup', stopResize);
+  event.preventDefault();
+}
+
+function doResize(event) {
+  if (resizeTarget !== 'right') return;
+  const diff = resizeStartX - event.clientX;
+  const newWidth = Math.max(200, Math.min(600, resizeStartWidth + diff));
+  document.getElementById('rightPanel').style.width = newWidth + 'px';
+}
+
+function stopResize() {
+  resizeTarget = null;
+  document.getElementById('rightHandle').classList.remove('active');
+  document.removeEventListener('mousemove', doResize);
+  document.removeEventListener('mouseup', stopResize);
+}
+
+// Update status bar after renderMessages
+const _origRender = renderMessages;
+renderMessages = function() {
+  _origRender();
+  updateStatusBar();
+};
 
 // ===== Start =====
 document.addEventListener('DOMContentLoaded', init);

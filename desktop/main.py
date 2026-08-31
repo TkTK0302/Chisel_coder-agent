@@ -83,6 +83,15 @@ def delete_conversation(conv_id: str):
     db.delete_conversation(conv_id)
 
 @eel.expose
+def rename_conversation(conv_id: str, title: str):
+    import sqlite3
+    conn = sqlite3.connect(str(DATA_DIR / "chisel.db"))
+    conn.execute("UPDATE conversations SET title=? WHERE id=?", (title, conv_id))
+    conn.commit()
+    conn.close()
+    return json.dumps({"ok": True})
+
+@eel.expose
 def list_messages(conv_id: str):
     return json.dumps(db.list_messages(conv_id))
 
