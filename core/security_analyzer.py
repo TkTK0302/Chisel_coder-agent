@@ -16,6 +16,7 @@ from core.shell_semantics import analyze_command
 RISK_PATTERNS: list[tuple[re.Pattern, SecurityRisk, str, str]] = [
     # CRITICAL
     (re.compile(r"\brm\s+-rf?\s+(/etc\b|/bin\b|/boot\b|/dev\b|/home\b|/root\b|/var\b|/usr\b|/lib\b|/proc\b|/sys\b)", re.IGNORECASE), SecurityRisk.CRITICAL, "Recursive delete on system directory", "catastrophic data loss"),
+    (re.compile(r"\brm\s+-rf?\s+\.git", re.IGNORECASE), SecurityRisk.CRITICAL, "Recursive delete on .git directory", "irreversible git history loss"),
     (re.compile(r"\brm\s+-rf?\s+\.", re.IGNORECASE), SecurityRisk.HIGH, "Recursive delete in current directory", "may delete project files"),
     (re.compile(r"\brm\s+-rf?\s+~", re.IGNORECASE), SecurityRisk.CRITICAL, "Recursive delete on home directory", "catastrophic data loss"),
     (re.compile(r"\bdd\s+if=", re.IGNORECASE), SecurityRisk.HIGH, "Write directly to a block device", "irreversible disk damage"),
@@ -23,6 +24,10 @@ RISK_PATTERNS: list[tuple[re.Pattern, SecurityRisk, str, str]] = [
     (re.compile(r"\b(find\s+.*\s+-delete)\b", re.IGNORECASE), SecurityRisk.HIGH, "Bulk file deletion via find -delete", "may delete many files at once"),
     (re.compile(r"\b(find\s+.*\s+-exec\s*rm)\b", re.IGNORECASE), SecurityRisk.HIGH, "Bulk file deletion via find exec rm", "may delete many files at once"),
     (re.compile(r"\b(mkfs|fdisk|parted)\b", re.IGNORECASE), SecurityRisk.HIGH, "Create or modify disk partitions", "irreversible disk changes"),
+    # MEDIUM patterns before general HIGH rm -rf (specific patterns must come first)
+    (re.compile(r"\brm\s+-rf?\s+.*__pycache__", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete __pycache__ directories", "cache cleanup"),
+    (re.compile(r"\brm\s+-rf?\s+.*\.pytest_cache", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete .pytest_cache directories", "cache cleanup"),
+    (re.compile(r"\brm\s+-rf?\s+.*\.pyc", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete .pyc files", "cache cleanup"),
     (re.compile(r"\brm\s+-rf?\b", re.IGNORECASE), SecurityRisk.HIGH, "Recursively delete files or directories", "irreversible data loss"),
     (re.compile(r"\brm\s+-r\s", re.IGNORECASE), SecurityRisk.HIGH, "Recursively delete a directory", "data loss"),
     # HIGH

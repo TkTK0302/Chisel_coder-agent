@@ -29,6 +29,7 @@ _DESTRUCTIVE_CMDS = {"rm", "dd", "mkfs", "format", "shutdown", "reboot", "powero
 _SENSITIVE_PATHS = {"/etc", "/bin", "/boot", "/dev/sda", "/dev/sdb", "/var/log"}
 _PROTECTED_PATTERNS = [
     r"\.git[/\\]",
+    r"\.git$",
     r"\.env[^.]*$",
     r"\.vscode[/\\]",
     r"\.ssh[/\\]",
@@ -132,6 +133,8 @@ def _analyze_regex(command: str) -> tuple[str, str]:
     # 检查危险命令
     if re.search(r"\brm\s+-rf?\s+(/etc\b|/bin\b|/boot\b|/dev\b|/home\b|/root\b|/var\b|/usr\b|/lib\b|/proc\b|/sys\b)", command):
         return ("CRITICAL", "Recursive delete on system directory")
+    if re.search(r"\brm\s+-rf?\s+\.git", command):
+        return ("CRITICAL", "Recursive delete on .git directory")
     if re.search(r"\brm\s+-rf?\s+\.", command):
         return ("HIGH", "Recursive delete in current directory")
     if re.search(r"\bdd\s+if=.*of=/dev/(sd|hd|nvme)", command):
