@@ -307,21 +307,25 @@ def _handle_plan(ctx, args: dict) -> str:
                 preview = _dry_run_preview(ctx.workspace)
                 if preview:
                     approval = ctx.ask(
-                        f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}\n\n"
-                        f"⚠️ Dry-Run Preview - files that would be affected:\n{preview}"
+                        f"⚠️ Plan involves cleanup/delete operations.\n\n"
+                        f"Dry-Run Preview:\n{preview}\n\n"
+                        f"Plan:\n{summary}\n\n"
+                        f"Approve and execute? (y/N)"
                     )
                 else:
                     approval = ctx.ask(
-                        f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}"
+                        f"Plan created with {len(tasks)} tasks.\n{summary}\n\nApprove? (y/N)"
                     )
             else:
                 approval = ctx.ask(
-                    f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}"
+                    f"Plan created with {len(tasks)} tasks.\n{summary}\n\nApprove? (y/N)"
                 )
-            if approval and any(kw in approval.lower() for kw in ["no", "not", "dis", "reject", "revise"]):
-                reason = ctx.ask("Please explain why the plan needs revision, so I can improve it.")
+            if approval and any(kw in approval.lower() for kw in ["no", "not", "dis", "reject", "revise", "n"]):
+                reason = ctx.ask("Please explain why the plan needs revision, so I can improve it. Type 'cancel' to cancel the task.")
                 plan._rejection_reason = reason or "No reason given."
-                return f"Plan not approved. Feedback: {plan._rejection_reason}"
+                if reason and "cancel" in reason.lower():
+                    return "Task cancelled by user. Please stop and wait for new instructions."
+                return f"Plan not approved. Feedback: {plan._rejection_reason}. Please revise the plan based on this feedback."
             plan.approve()
             return "Plan approved and ready for execution."
         return result
