@@ -66,10 +66,11 @@ _PROTECTED_PATTERNS = [
 
 
 class SecurityAnalyzer:
-    def __init__(self, interactive: bool, policy: ConfirmationPolicy | None = None, client=None):
+    def __init__(self, interactive: bool, policy: ConfirmationPolicy | None = None, client=None, workspace: str = ""):
         self.interactive = interactive
         self.policy = policy or ConfirmRisky()
         self.client = client
+        self.workspace = workspace
         self.always_allow: dict[str, bool] = {}
         self._audit_log: list[dict] = []
 
@@ -213,7 +214,36 @@ class SecurityAnalyzer:
         print(f"     (Non-interactive mode, auto-rejected)", flush=True)
 
     def _confirm_critical(self, command, risk, reason, consequence):
-        """CRITICAL 风险：Dry-Run 预览 + 强确认短语。"""
+        """CRITICAL 风险：Dry-Run 预览 + 强确认。"""
+        # 桌面模式：IPC 按钮
+        if os.environ.get("CHISEL_DESKTOP") and self.workspace:
+            from core.user_input import ask_question
+            preview = self.dry_run(command)
+            msg = f"💀 高危操作\n命令：{command}\n说明：{reason}\n后果：{consequence}"
+            if preview:
+                msg += f"\n\n受影响文件：{len(preview)} 项"
+                crit = [i for i in preview if i.get("risk") == "CRITICAL"]
+                for i in crit[:5]:
+                    msg += f"\n  💀 {i['path']}"
+            protected = []
+            for pat, reason_p, _ in _PROTECTED_PATTERNS:
+                if re.search(pat, command, re.IGNORECASE):
+                    protected.append(pat)
+            if protected:
+                ans = ask_question(self.workspace, msg + "\n\n⚠️ 涉及受保护资源，请确认", ["确认执行", "取消"])
+                if ans == "确认执行":
+                    self._audit("allow", command, f"risk={risk.value}, ipc_confirm")
+                    return True
+                self._audit("reject", command, f"risk={risk.value}, ipc_reject")
+                return False
+            ans = ask_question(self.workspace, msg, ["是", "否"])
+            if ans == "是":
+                self._audit("allow", command, f"risk={risk.value}, ipc_confirm")
+                return True
+            self._audit("reject", command, f"risk={risk.value}, ipc_reject")
+            return False
+
+        # CLI 模式
         print(f"\n  {'='*50}", flush=True)
         print(f"  💀  CRITICAL Risk Operation", flush=True)
         print(f"  {'='*50}", flush=True)
@@ -221,43 +251,32 @@ class SecurityAnalyzer:
         print(f"  Reason: {reason}")
         print(f"  Consequence: {consequence}")
         print()
-
-        # Dry-Run 预览
         preview = self.dry_run(command)
         if preview:
             crit = [i for i in preview if i.get("risk") == "CRITICAL"]
             high = [i for i in preview if i.get("risk") == "HIGH"]
             medium = [i for i in preview if i.get("risk") == "MEDIUM"]
             print(f"  Dry-Run Preview ({len(preview)} items affected):")
-            for i in crit:
+            for i in crit[:5]:
                 print(f"    💀 [CRITICAL] {i['path']}")
-            for i in high:
+            for i in high[:5]:
                 print(f"    🔴 [HIGH]     {i['path']}")
-            for i in medium:
+            for i in medium[:5]:
                 print(f"    ⚠️  [MEDIUM]   {i['path']}")
             print()
-
-        # 检查是否涉及受保护文件
         protected = []
         for pat, reason_p, _ in _PROTECTED_PATTERNS:
             if re.search(pat, command, re.IGNORECASE):
                 protected.append(pat)
-
         if protected:
             print(f"  ⚠️  This operation targets protected resources: {', '.join(protected)}")
-            print(f"  These operations are irreversible and may cause data loss.")
-            print()
-            safe_command = command[:80]
             phrase = f"CONFIRM DELETE {Path(command.split()[-1]).name if command.split() else 'FILES'}"
             ans = input(f"  Type confirmation phrase to proceed:\n  > ").strip()
             if ans == phrase:
                 self._audit("allow", command, f"risk={risk.value}, phrase_confirmed")
-                print(f"  → Operation confirmed", flush=True)
                 return True
-            print(f"  → Cancelled (phrase mismatch)", flush=True)
             self._audit("reject", command, f"risk={risk.value}, phrase_mismatch")
             return False
-
         ans = input(f"  Confirm? (y/N) ").strip().lower()
         if ans in ("y", "yes"):
             self._audit("allow", command, f"risk={risk.value}")
@@ -267,10 +286,27 @@ class SecurityAnalyzer:
 
     def _confirm_high(self, command, risk, reason, consequence):
         """HIGH 风险：Dry-Run 预览 + 标准确认。"""
+        if os.environ.get("CHISEL_DESKTOP") and self.workspace:
+            from core.user_input import ask_question
+            msg = f"🔴 高危操作\n命令：{command}\n说明：{reason}"
+            preview = self.dry_run(command)
+            if preview:
+                msg += f"\n\n受影响文件：{len(preview)} 项"
+                for i in preview[:5]:
+                    msg += f"\n  - {i['path']}"
+            ans = ask_question(self.workspace, msg, ["是", "否（本次会话不再询问）", "否"])
+            if ans == "是":
+                self._audit("allow", command, f"risk={risk.value}, ipc_confirm")
+                return True
+            if ans == "否（本次会话不再询问）":
+                self._audit("reject", command, f"risk={risk.value}, ipc_reject")
+                return False
+            self._audit("reject", command, f"risk={risk.value}, ipc_reject")
+            return False
+
         print(f"\n  🔴  HIGH Risk Operation", flush=True)
         print(f"  Command: {command}")
         print(f"  Reason: {reason}")
-
         preview = self.dry_run(command)
         if preview:
             print(f"  Dry-Run: {len(preview)} items would be affected")
@@ -278,14 +314,11 @@ class SecurityAnalyzer:
                 print(f"    - {i['path']}")
             if len(preview) > 10:
                 print(f"    ... and {len(preview)-10} more")
-
         try:
             ans = input("  Confirm? (y/N/a) ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("  (Input interrupted, rejected)", flush=True)
             self._audit("reject", command, "input_interrupted")
             return False
-
         if ans == "a":
             self.always_allow[self._command_hash(command)] = True
             self._audit("allow", command, f"risk={risk.value}, always")
@@ -298,6 +331,21 @@ class SecurityAnalyzer:
 
     def _confirm_medium(self, command, risk, reason):
         """MEDIUM 风险：标准确认。"""
+        if os.environ.get("CHISEL_DESKTOP") and self.workspace:
+            from core.user_input import ask_question
+            msg = f"⚠️ 中风险操作\n命令：{command}"
+            if reason:
+                msg += f"\n说明：{reason}"
+            ans = ask_question(self.workspace, msg, ["是", "否（本次会话不再询问）", "否"])
+            if ans == "是":
+                self._audit("allow", command, f"risk={risk.value}, ipc_confirm")
+                return True
+            if ans == "否（本次会话不再询问）":
+                self._audit("reject", command, f"risk={risk.value}, ipc_reject")
+                return False
+            self._audit("reject", command, f"risk={risk.value}, ipc_reject")
+            return False
+
         print(f"\n  ⚠️  {risk.value} Risk Operation", flush=True)
         print(f"  Command: {command}", flush=True)
         if reason:
@@ -305,10 +353,8 @@ class SecurityAnalyzer:
         try:
             ans = input("  Confirm? (y/N/a) ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("  (Input interrupted, rejected)", flush=True)
             self._audit("reject", command, "input_interrupted")
             return False
-
         if ans == "a":
             self.always_allow[self._command_hash(command)] = True
             self._audit("allow", command, f"risk={risk.value}, always")

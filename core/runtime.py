@@ -116,7 +116,7 @@ def build_runtime(
         plan=plan_mod.PlanTracker(),
         ask=ask_mod.make_ask(interactive),
         confirm_dangerous=confirm_dangerous or (lambda cmd: False),
-        security=SecurityAnalyzer(interactive=interactive, client=client),
+        security=SecurityAnalyzer(interactive=interactive, client=client, workspace=workspace),
         sandbox_mode=sandbox_mode,
         sandbox_image=sandbox_image,
         use_rag=use_rag,
