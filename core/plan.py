@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -294,15 +295,30 @@ def _handle_plan(ctx, args: dict) -> str:
         result = plan.create(tasks)
         if not result.startswith("Plan created"):
             return result
-        # 审批环节（第 4 项：拒绝时收集原因）
+        # 审批环节：先显示 Dry-Run 预览（如果涉及清理操作）
         if ctx.ask:
             summary = "\n".join(f"  [{t['status']}] {t['id']}: {t['description']}"
                                for t in tasks)
-            approval = ctx.ask(
-                f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}"
-            )
+            # 检查是否有清理/删除相关的任务
+            has_cleanup = any("清理" in t.get("description", "") or "删除" in t.get("description", "")
+                              or "clean" in t.get("description", "").lower() or "delete" in t.get("description", "").lower()
+                              or "remove" in t.get("description", "").lower() for t in tasks)
+            if has_cleanup and ctx.workspace:
+                preview = _dry_run_preview(ctx.workspace)
+                if preview:
+                    approval = ctx.ask(
+                        f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}\n\n"
+                        f"⚠️ Dry-Run Preview - files that would be affected:\n{preview}"
+                    )
+                else:
+                    approval = ctx.ask(
+                        f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}"
+                    )
+            else:
+                approval = ctx.ask(
+                    f"Plan created with {len(tasks)} tasks. Approve and start execution?\n{summary}"
+                )
             if approval and any(kw in approval.lower() for kw in ["no", "not", "dis", "reject", "revise"]):
-                # 收集拒绝原因
                 reason = ctx.ask("Please explain why the plan needs revision, so I can improve it.")
                 plan._rejection_reason = reason or "No reason given."
                 return f"Plan not approved. Feedback: {plan._rejection_reason}"
@@ -327,3 +343,45 @@ def _handle_plan(ctx, args: dict) -> str:
 
 
 register_tool(PLAN_SCHEMA, _handle_plan)
+
+
+def _dry_run_preview(workspace: str) -> str:
+    """扫描工作目录，列出常见的清理目标文件。"""
+    ws = Path(workspace)
+    if not ws.exists():
+        return ""
+
+    targets = []
+    _PROTECTED = {".git", ".env", ".env.example", ".gitignore", ".vscode", ".ssh", "node_modules"}
+
+    # 扫描常见缓存/临时文件
+    for root, dirs, files in os.walk(ws):
+        rel = os.path.relpath(root, ws)
+        # 跳过受保护目录
+        if any(p in rel.split(os.sep) for p in _PROTECTED):
+            continue
+        for d in dirs:
+            if d in ("__pycache__", ".pytest_cache", ".mypy_cache", "node_modules/.cache", ".chisel"):
+                full = os.path.join(root, d)
+                size = sum(os.path.getsize(os.path.join(full, f)) for f in os.listdir(full) if os.path.isfile(os.path.join(full, f))) if os.path.isdir(full) else 0
+                targets.append(("📁", rel + "/" + d if rel != "." else d, size, "Directory"))
+        for f in files:
+            if f.endswith((".pyc", ".pyo", ".DS_Store", ".thumbs.db")):
+                full = os.path.join(root, f)
+                size = os.path.getsize(full)
+                targets.append(("📄", rel + "/" + f if rel != "." else f, size, "File"))
+        if len(targets) > 50:
+            break
+
+    if not targets:
+        return ""
+
+    total_size = sum(t[2] for t in targets)
+    lines = [f"  Detected {len(targets)} items (~{total_size/1024:.0f} KB):"]
+    for icon, path, size, kind in targets[:20]:
+        size_str = f"{size/1024:.1f} KB" if size > 1024 else f"{size} B"
+        lines.append(f"    {icon} {path} ({kind}, {size_str})")
+    if len(targets) > 20:
+        lines.append(f"    ... and {len(targets) - 20} more items")
+    lines.append(f"  Protected: {', '.join(_PROTECTED)}")
+    return "\n".join(lines)
