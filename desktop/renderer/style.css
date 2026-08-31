@@ -93,6 +93,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); over
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover { background: var(--accent2); }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-xs { padding: 2px 6px; font-size: 11px; border: none; background: transparent; color: var(--text2); cursor: pointer; }
+.btn-xs:hover { color: var(--text); }
 .btn-lg { padding: 12px 28px; font-size: 15px; border-radius: 10px; }
 
 /* Modal */

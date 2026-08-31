@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import eel
@@ -52,6 +53,20 @@ def delete_project(project_id: str):
     if p:
         shutil.rmtree(p["workspace"], ignore_errors=True)
     db.delete_project(project_id)
+
+@eel.expose
+def update_workspace(project_id: str, new_workspace: str):
+    p = db.get_project(project_id)
+    if not p:
+        return json.dumps({"error": "Not found"})
+    Path(new_workspace).mkdir(parents=True, exist_ok=True)
+    import sqlite3
+    conn = sqlite3.connect(str(DATA_DIR / "chisel.db"))
+    conn.execute("UPDATE projects SET workspace=?, updated_at=? WHERE id=?",
+                 (new_workspace, datetime.now(timezone.utc).isoformat(), project_id))
+    conn.commit()
+    conn.close()
+    return json.dumps({"ok": True})
 
 @eel.expose
 def list_conversations(project_id: str):

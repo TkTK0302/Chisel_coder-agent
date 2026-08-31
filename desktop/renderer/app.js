@@ -23,6 +23,7 @@ async function api(name, ...args) {
       'list_files': ['GET', '/api/projects/{0}/files'],
       'upload_file': ['POST', '/api/projects/{0}/files'],
       'delete_file': ['DELETE', '/api/projects/files/{0}'],
+      'update_workspace': ['POST', '/api/projects/{0}/workspace', (id, ws) => ({workspace: ws})],
     };
     const [method, path, bodyFn] = apiMap[name] || [];
     if (!path) throw new Error('Unknown API: ' + name);
@@ -80,11 +81,26 @@ async function selectProject(id) {
   state.currentConv = null; state.messages = [];
   document.getElementById('emptyState').classList.add('hidden');
   document.getElementById('chatView').classList.remove('hidden');
-  document.getElementById('chatProjectName').textContent = state.currentProject.name;
+  document.getElementById('chatProjectName').textContent = state.currentProject.name + ' · ' + state.currentProject.workspace;
   renderProjects();
   await loadConversations();
   if (state.conversations.length > 0) selectConversation(state.conversations[0].id);
   else await newConversation();
+}
+
+async function changeWorkspace() {
+  if (!state.currentProject) return;
+  try {
+    const folder = await eel.select_folder()();
+    if (folder) {
+      // Update workspace in database via Eel
+      await api('update_workspace', state.currentProject.id, folder);
+      await loadProjects();
+      state.currentProject = state.projects.find(p => p.id === state.currentProject.id);
+      document.getElementById('chatProjectName').textContent = state.currentProject.name + ' · ' + state.currentProject.workspace;
+      toast('Workspace updated');
+    }
+  } catch (e) { toast('Failed to change workspace'); }
 }
 
 async function createProject() {
