@@ -224,6 +224,19 @@ def delete_file(file_id: int):
     """删除项目文件。"""
     db.delete_file(file_id)
     return json.dumps({"ok": True})
+
+@eel.expose
+def check_pending_question(workspace: str):
+    """检查指定工作目录是否有待处理的用户问题。"""
+    from core.user_input import get_pending_question
+    return json.dumps(get_pending_question(workspace))
+
+@eel.expose
+def submit_answer(workspace: str, answer: str):
+    """提交用户对问题的回答。"""
+    from core.user_input import submit_answer
+    submit_answer(workspace, answer)
+    return json.dumps({"ok": True})
     return json.dumps({"filename": filename, "size": size})
 
 if __name__ == "__main__":

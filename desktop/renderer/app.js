@@ -581,8 +581,50 @@ function updateStatusBar() {
   document.getElementById('statusContext').textContent = 'Context: ~' + Math.round(total / 1000) + 'K / 60K';
 }
 
-// ===== Override sendMessage for auto-rename =====
-const _origSend = sendMessage;
+// ===== Question Polling (for Eel interactive buttons) =====
+let questionPollInterval = null;
+
+function startQuestionPolling() {
+  stopQuestionPolling();
+  questionPollInterval = setInterval(async () => {
+    if (!state.currentProject) return;
+    try {
+      const q = await api('check_pending_question', state.currentProject.workspace);
+      if (q && q.question) {
+        stopQuestionPolling();
+        showQuestionModal(q.question, q.options || ['是', '否']);
+      }
+    } catch(e) {}
+  }, 1000);
+}
+
+function stopQuestionPolling() {
+  if (questionPollInterval) {
+    clearInterval(questionPollInterval);
+    questionPollInterval = null;
+  }
+}
+
+function showQuestionModal(question, options) {
+  const modal = document.getElementById('questionModal');
+  document.getElementById('questionText').textContent = question;
+  const btns = document.getElementById('questionButtons');
+  btns.innerHTML = options.map(opt =>
+    `<button class="btn btn-primary btn-sm" onclick="answerQuestion('${esc(opt)}')">${esc(opt)}</button>`
+  ).join(' ');
+  modal.classList.remove('hidden');
+}
+
+async function answerQuestion(answer) {
+  document.getElementById('questionModal').classList.add('hidden');
+  if (state.currentProject) {
+    await api('submit_answer', state.currentProject.workspace, answer);
+  }
+  startQuestionPolling();
+}
+
+// Override sendMessage to start polling
+const _origSend2 = sendMessage;
 sendMessage = async function() {
   const input = document.getElementById('messageInput');
   const text = input.value.trim();
@@ -596,6 +638,7 @@ sendMessage = async function() {
     if (result && result.id) {
       state.messages.push({ id: result.id, role: 'assistant', content: '⏳ Thinking...' });
       renderMessages();
+      startQuestionPolling();
     }
     const msgs = await api('list_messages', state.currentConv.id);
     const userMsgs = msgs.filter(m => m.role === 'user');

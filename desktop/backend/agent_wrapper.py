@@ -14,6 +14,8 @@ AGENT_DIR = str(Path(__file__).resolve().parent.parent.parent)
 def run_agent(task: str, workspace: str, on_output=None, model: str = "deepseek-chat", base_url: str = "https://api.deepseek.com") -> str:
     """运行 agent，支持流式输出回调。on_output(chunk) 会在每行输出时被调用。"""
     env = os.environ.copy()
+    env["CHISEL_DESKTOP"] = "1"
+    env["CHISEL_WORKSPACE"] = workspace
     cmd = [sys.executable, "-m", "agent", task, "--workspace", workspace, "--model", model, "--base-url", base_url, "--max-steps", "30"]
 
     full_output = []
