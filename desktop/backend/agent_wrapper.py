@@ -63,7 +63,7 @@ def _clean_output(text: str) -> str:
         started = False
         for line in lines:
             if not started:
-                if line.strip() and not line.strip().startswith("="):
+                if line.strip() and not line.strip().startswith("=") and "共" not in line and "步" not in line:
                     started = True
                     content_lines.append(line)
             else:

@@ -178,6 +178,7 @@ function renderMessages() {
 
 function formatContent(text) {
   return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\n/g, '<br>');
