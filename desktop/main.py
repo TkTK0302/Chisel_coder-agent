@@ -74,9 +74,48 @@ def send_message(conv_id: str, content: str):
             file_context += f"  - {f['filename']} ({f['filepath']})\n"
         file_context += "\nUse read_file with the path to access these files.\n"
     task = content + file_context
-    result = run_agent(task, project["workspace"])
-    db.add_message(conv_id, "assistant", result)
-    return json.dumps({"role": "assistant", "content": result})
+
+    # 创建占位消息
+    placeholder = db.add_message(conv_id, "assistant", "⏳ Thinking...")
+    msg_id = placeholder["id"]
+
+    # 流式输出回调
+    accumulated = []
+    def on_output(chunk):
+        accumulated.append(chunk)
+        current = "".join(accumulated)
+        # 推送到前端
+        try:
+            eel.update_message(msg_id, current)()
+        except Exception:
+            pass
+
+    # 后台运行 agent
+    import threading as th
+    def run():
+        try:
+            result = run_agent(task, project["workspace"], on_output=on_output)
+            # 保存最终结果
+            import sqlite3
+            conn = sqlite3.connect(str(Path.home() / ".chisel-desktop" / "chisel.db"))
+            conn.execute("UPDATE messages SET content=? WHERE id=?", (result, msg_id))
+            conn.commit()
+            conn.close()
+            # 通知前端完成
+            try:
+                eel.update_message(msg_id, result)()
+                eel.message_done(msg_id)()
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                eel.update_message(msg_id, f"Error: {e}")()
+                eel.message_done(msg_id)()
+            except Exception:
+                pass
+
+    th.Thread(target=run, daemon=True).start()
+    return json.dumps({"role": "assistant", "content": "⏳ Thinking...", "id": msg_id})
 
 @eel.expose
 def list_files(project_id: str):

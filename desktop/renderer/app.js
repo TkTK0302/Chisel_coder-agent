@@ -179,9 +179,12 @@ async function sendMessage() {
   renderMessages();
   state.loading = true; document.getElementById('sendBtn').disabled = true;
   try {
-    await api('send_message', state.currentConv.id, text);
-    state.messages = await api('list_messages', state.currentConv.id);
-    renderMessages();
+    const result = await api('send_message', state.currentConv.id, text);
+    // Add placeholder message (will be updated by streaming)
+    if (result && result.id) {
+      state.messages.push({ id: result.id, role: 'assistant', content: '⏳ Thinking...' });
+      renderMessages();
+    }
   } catch (e) { toast('Error: ' + e.message); }
   state.loading = false; document.getElementById('sendBtn').disabled = false;
 }
@@ -273,6 +276,32 @@ function confirmModal() {
 
 // ===== Error handling =====
 window.onerror = function(msg, url, line) { toast('Error: ' + msg); };
+
+// ===== Eel streaming callbacks =====
+if (typeof eel !== 'undefined') {
+  eel.expose(update_message, 'update_message');
+  eel.expose(message_done, 'message_done');
+}
+
+function update_message(msgId, content) {
+  // Update a message in the chat
+  const idx = state.messages.findIndex(m => m.id === msgId);
+  if (idx >= 0) {
+    const cleaned = typeof content === 'string' ? content : content;
+    state.messages[idx].content = cleaned;
+    renderMessages();
+  }
+}
+
+function message_done(msgId) {
+  // Mark message as complete, reload to get final version
+  setTimeout(async () => {
+    try {
+      state.messages = await api('list_messages', state.currentConv.id);
+      renderMessages();
+    } catch(e) {}
+  }, 500);
+}
 
 // ===== Start =====
 document.addEventListener('DOMContentLoaded', init);

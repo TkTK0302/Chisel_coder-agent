@@ -1,28 +1,53 @@
-"""Agent API 包装器：调用现有 agent.py 执行任务，提取用户可见的回答。"""
+"""Agent API 包装器：调用现有 agent.py 执行任务，支持流式输出。"""
 from __future__ import annotations
 
 import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 AGENT_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 
-def run_agent(task: str, workspace: str, model: str = "deepseek-chat", base_url: str = "https://api.deepseek.com") -> str:
-    """运行 agent，返回只包含最终回答的文本（过滤掉调试信息）。"""
+def run_agent(task: str, workspace: str, on_output=None, model: str = "deepseek-chat", base_url: str = "https://api.deepseek.com") -> str:
+    """运行 agent，支持流式输出回调。on_output(chunk) 会在每行输出时被调用。"""
     env = os.environ.copy()
     cmd = [sys.executable, "-m", "agent", task, "--workspace", workspace, "--model", model, "--base-url", base_url, "--max-steps", "30"]
+
+    full_output = []
+    lock = threading.Lock()
+
     try:
-        result = subprocess.run(cmd, cwd=AGENT_DIR, capture_output=True, text=True, encoding="utf-8", timeout=300, env=env)
-        raw = result.stdout or ""
+        proc = subprocess.Popen(
+            cmd, cwd=AGENT_DIR,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
+            env=env,
+        )
+
+        def read_stdout():
+            for line in proc.stdout:
+                with lock:
+                    full_output.append(line)
+                if on_output:
+                    on_output(line)
+
+        t = threading.Thread(target=read_stdout, daemon=True)
+        t.start()
+        proc.wait(timeout=300)
+        t.join(timeout=5)
+
+        with lock:
+            raw = "".join(full_output)
         cleaned = _clean_output(raw)
-        # 在回答末尾加上工作目录信息，让用户知道文件在哪
         if cleaned:
-            return cleaned + f"\n\n> 工作目录：{workspace}"
+            cleaned += f"\n\n> 工作目录：{workspace}"
         return cleaned
+
     except subprocess.TimeoutExpired:
+        proc.kill()
         return "The agent took too long to respond. Please try a simpler task."
     except Exception as e:
         return f"An error occurred: {e}"
@@ -30,13 +55,10 @@ def run_agent(task: str, workspace: str, model: str = "deepseek-chat", base_url:
 
 def _clean_output(text: str) -> str:
     """从 agent 的完整输出中提取用户可见的最终回答。"""
-    # 1. 尝试提取 ✅ 任务完成 之后的内容
     if "✅ 任务完成" in text:
         parts = text.split("✅ 任务完成")
         last = parts[-1]
-        # 去掉最后的 === 分隔线
         lines = last.split("\n")
-        # 找到第一个非空行且不是 === 的行作为开始
         content_lines = []
         started = False
         for line in lines:
@@ -51,18 +73,15 @@ def _clean_output(text: str) -> str:
             if cleaned:
                 return cleaned
 
-    # 2. 如果没有 ✅ 任务完成，尝试提取 summary 之后的内容
     if "**总结：**" in text or "**总结**" in text:
         parts = re.split(r"\*\*总结[：]?\*\*", text)
         if len(parts) > 1:
             return parts[-1].strip()
 
-    # 3. 如果都没有，过滤掉明显的调试行
     lines = text.split("\n")
     filtered = []
     for line in lines:
         stripped = line.strip()
-        # 跳过调试信息
         if not stripped:
             continue
         if stripped.startswith("[stderr]") or "CryptographyDeprecationWarning" in stripped:
