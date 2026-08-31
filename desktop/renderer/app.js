@@ -392,13 +392,14 @@ async function refreshFileExplorer() {
 }
 
 function toggleDir(el) {
-  // Simple toggle: collapse/expand children
   const items = document.getElementById('fileTree').children;
   const idx = Array.from(items).indexOf(el);
+  const pl = el.style.paddingLeft ? parseInt(el.style.paddingLeft) : 12;
+  const depth = Math.round((pl - 12) / 16);
   let i = idx + 1;
-  const depth = el.style.paddingLeft ? parseInt(el.style.paddingLeft) / 16 : 1;
   while (i < items.length) {
-    const childDepth = items[i].style.paddingLeft ? parseInt(items[i].style.paddingLeft) / 16 : 1;
+    const childPl = items[i].style.paddingLeft ? parseInt(items[i].style.paddingLeft) : 12;
+    const childDepth = Math.round((childPl - 12) / 16);
     if (childDepth <= depth) break;
     items[i].style.display = items[i].style.display === 'none' ? '' : 'none';
     i++;
