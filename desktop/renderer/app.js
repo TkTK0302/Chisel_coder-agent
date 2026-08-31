@@ -91,7 +91,8 @@ async function createProject() {
   showModal('New Project', 'Project name...', async (name) => {
     if (!name || !name.trim()) { toast('Please enter a project name'); return; }
     try {
-      await api('create_project', name.trim());
+      const folder = document.getElementById('modalFolder').value;
+      await api('create_project', name.trim(), folder);
       await loadProjects();
       if (state.projects.length > 0) selectProject(state.projects[0].id);
       toast('Project created: ' + name.trim());
@@ -99,6 +100,18 @@ async function createProject() {
       toast('Failed to create project');
     }
   });
+  document.getElementById('modalFolder').value = '';
+}
+
+async function pickFolder() {
+  try {
+    const folder = await eel.select_folder()();
+    if (folder) {
+      document.getElementById('modalFolder').value = folder;
+    }
+  } catch (e) {
+    toast('Failed to pick folder');
+  }
 }
 
 async function deleteProject(id) {

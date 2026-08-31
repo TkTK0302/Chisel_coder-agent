@@ -25,8 +25,22 @@ def list_projects():
     return json.dumps(db.list_projects())
 
 @eel.expose
-def create_project(name: str):
-    ws = str(PROJECTS_DIR / name.replace(" ", "_"))
+def select_folder():
+    """打开文件夹选择对话框。"""
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()
+    folder = filedialog.askdirectory(title="选择项目文件夹")
+    root.destroy()
+    return folder or ""
+
+@eel.expose
+def create_project(name: str, workspace_path: str = ""):
+    if workspace_path:
+        ws = workspace_path
+    else:
+        ws = str(PROJECTS_DIR / name.replace(" ", "_"))
     Path(ws).mkdir(parents=True, exist_ok=True)
     project = db.create_project(name, ws)
     db.create_conversation(project["id"], "New Chat")
