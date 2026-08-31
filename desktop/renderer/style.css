@@ -113,6 +113,23 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); over
 .folder-input { flex: 1; margin-bottom: 0 !important; }
 .folder-input[readonly] { opacity: 0.7; cursor: pointer; }
 
+/* ===== Right Panel (File Explorer) ===== */
+.right-panel { width: 320px; background: var(--bg2); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
+.right-panel.hidden { display: none; }
+.rp-toggle { position: absolute; top: 8px; right: 8px; z-index: 10; width: 32px; height: 32px; border-radius: 6px; background: var(--bg3); border: 1px solid var(--border); color: var(--text2); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+.rp-toggle:hover { background: var(--bg4); color: var(--text); }
+.rp-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text2); flex-shrink: 0; }
+.rp-tree { flex: 1; overflow-y: auto; padding: 4px 0; font-size: 13px; font-family: var(--mono); min-height: 0; }
+.rp-tree .item { padding: 3px 12px; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+.rp-tree .item:hover { background: var(--bg3); }
+.rp-tree .item.file { color: var(--text); }
+.rp-tree .item.dir { color: var(--accent2); font-weight: 500; }
+.rp-tree .item .size { color: var(--text2); font-size: 11px; margin-left: auto; }
+.rp-code { border-top: 1px solid var(--border); display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.rp-code-header { padding: 6px 12px; font-size: 12px; color: var(--text2); background: var(--bg3); border-bottom: 1px solid var(--border); flex-shrink: 0; font-family: var(--mono); }
+.rp-code-content { flex: 1; overflow: auto; padding: 12px; margin: 0; font-family: var(--mono); font-size: 13px; line-height: 1.5; color: var(--text); background: var(--bg); white-space: pre; tab-size: 2; }
+.rp-code-content code { font-family: var(--mono); }
+
 /* Toast */
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 10px 24px; border-radius: var(--radius); background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-size: 13px; z-index: 999; box-shadow: var(--shadow); transition: all 0.3s; }
 .toast.hidden { opacity: 0; transform: translateX(-50%) translateY(20px); pointer-events: none; }

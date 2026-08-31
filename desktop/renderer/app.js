@@ -24,6 +24,8 @@ async function api(name, ...args) {
       'upload_file': ['POST', '/api/projects/{0}/files'],
       'delete_file': ['DELETE', '/api/projects/files/{0}'],
       'update_workspace': ['POST', '/api/projects/{0}/workspace', (id, ws) => ({workspace: ws})],
+      'list_workspace': ['GET', '/api/projects/{0}/workspace'],
+      'read_workspace_file': ['GET', '/api/projects/{0}/workspace/{1}'],
     };
     const [method, path, bodyFn] = apiMap[name] || [];
     if (!path) throw new Error('Unknown API: ' + name);
@@ -347,7 +349,63 @@ function confirmModal() {
 // ===== Error handling =====
 window.onerror = function(msg, url, line) { toast('Error: ' + msg); };
 
-// ===== Eel streaming callbacks =====
+// ===== File Explorer =====
+async function toggleFileExplorer() {
+  const panel = document.getElementById('rightPanel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden') && state.currentProject) {
+    await refreshFileExplorer();
+  }
+}
+
+async function refreshFileExplorer() {
+  if (!state.currentProject) return;
+  try {
+    const items = await api('list_workspace', state.currentProject.id);
+    const tree = document.getElementById('fileTree');
+    // Build tree from flat list
+    let html = '';
+    let lastDir = '';
+    items.forEach(item => {
+      const depth = item.path.split('/').length - 1;
+      const indent = '  '.repeat(depth);
+      if (item.type === 'dir') {
+        html += `<div class="item dir" style="padding-left:${12 + depth*16}px" onclick="toggleDir(this)">${indent}📁 ${item.path.split('/').pop()}</div>`;
+      } else {
+        const size = item.size > 1024 ? (item.size/1024).toFixed(1)+'KB' : item.size+'B';
+        html += `<div class="item file" style="padding-left:${12 + depth*16}px" onclick="openFile('${item.path}')">${indent}📄 ${item.path.split('/').pop()} <span class="size">${size}</span></div>`;
+      }
+    });
+    tree.innerHTML = html || '<div class="item" style="color:var(--text2);padding:12px">Empty workspace</div>';
+  } catch(e) { toast('Failed to load workspace'); }
+}
+
+function toggleDir(el) {
+  // Simple toggle: collapse/expand children
+  const items = document.getElementById('fileTree').children;
+  const idx = Array.from(items).indexOf(el);
+  let i = idx + 1;
+  const depth = el.style.paddingLeft ? parseInt(el.style.paddingLeft) / 16 : 1;
+  while (i < items.length) {
+    const childDepth = items[i].style.paddingLeft ? parseInt(items[i].style.paddingLeft) / 16 : 1;
+    if (childDepth <= depth) break;
+    items[i].style.display = items[i].style.display === 'none' ? '' : 'none';
+    i++;
+  }
+  el.textContent = el.textContent.startsWith('📁') ? '📂' + el.textContent.slice(1) : '📁' + el.textContent.slice(1);
+}
+
+async function openFile(path) {
+  if (!state.currentProject) return;
+  try {
+    const result = await api('read_workspace_file', state.currentProject.id, path);
+    if (result.error) { toast(result.error); return; }
+    document.getElementById('fileCodeHeader').textContent = '📄 ' + result.path;
+    document.getElementById('fileCodeContent').innerHTML = '<code>' + esc(result.content) + '</code>';
+  } catch(e) { toast('Failed to open file'); }
+}
+
+// Existing functions...
 if (typeof eel !== 'undefined') {
   eel.expose(update_message, 'update_message');
   eel.expose(message_done, 'message_done');

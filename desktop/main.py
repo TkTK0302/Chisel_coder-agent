@@ -153,6 +153,44 @@ def list_files(project_id: str):
     return json.dumps(db.list_files(project_id))
 
 @eel.expose
+def list_workspace(project_id: str):
+    """列出工作目录的文件树。"""
+    p = db.get_project(project_id)
+    if not p:
+        return json.dumps({"error": "Not found"})
+    ws = Path(p["workspace"])
+    if not ws.exists():
+        return json.dumps([])
+    items = []
+    for root, dirs, files in os.walk(ws):
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+        rel = os.path.relpath(root, ws)
+        for d in sorted(dirs):
+            items.append({"path": os.path.join(rel, d).replace("\\", "/"), "type": "dir"})
+        for f in sorted(files):
+            if f.startswith('.'):
+                continue
+            fp = os.path.join(root, f)
+            size = os.path.getsize(fp)
+            items.append({"path": os.path.join(rel, f).replace("\\", "/"), "type": "file", "size": size})
+    return json.dumps(items)
+
+@eel.expose
+def read_workspace_file(project_id: str, filepath: str):
+    """读取工作目录内的文件内容。"""
+    p = db.get_project(project_id)
+    if not p:
+        return json.dumps({"error": "Not found"})
+    full = Path(p["workspace"]) / filepath
+    if not full.exists() or not full.is_file():
+        return json.dumps({"error": "File not found"})
+    try:
+        content = full.read_text(encoding="utf-8")
+        return json.dumps({"content": content, "path": filepath})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+@eel.expose
 def upload_file(project_id: str, filename: str, content_base64: str):
     """上传文件（通过 base64 内容，兼容浏览器安全限制）。"""
     import base64
