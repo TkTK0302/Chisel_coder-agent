@@ -37,6 +37,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); over
 /* Main */
 #main { flex: 1; display: flex; flex-direction: column; background: var(--bg); position: relative; min-height: 0; }
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; gap: 16px; color: var(--text2); }
+.empty-state.hidden { display: none; }
 .empty-icon { font-size: 64px; color: var(--accent); opacity: 0.3; }
 .empty-state h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5px; }
 .chat-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
