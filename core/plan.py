@@ -307,27 +307,26 @@ def _handle_plan(ctx, args: dict) -> str:
                 preview = _dry_run_preview(ctx.workspace)
                 if preview:
                     approval = ctx.ask(
-                        f"⚠️ Plan involves cleanup/delete operations.\n\n"
-                        f"Dry-Run Preview:\n{preview}\n\n"
-                        f"Plan:\n{summary}\n\n"
-                        f"Approve and execute? (y/N)"
+                        f"⚠️ 计划涉及清理/删除操作\n\n"
+                        f"Dry-Run 预览：\n{preview}\n\n"
+                        f"计划内容：\n{summary}\n\n"
+                        f"是否批准执行？",
+                        ["是", "否"]
                     )
                 else:
                     approval = ctx.ask(
-                        f"Plan created with {len(tasks)} tasks.\n{summary}\n\nApprove? (y/N)"
+                        f"已创建 {len(tasks)} 个子任务\n{summary}\n\n是否批准？",
+                        ["是", "否"]
                     )
             else:
                 approval = ctx.ask(
-                    f"Plan created with {len(tasks)} tasks.\n{summary}\n\nApprove? (y/N)"
+                    f"已创建 {len(tasks)} 个子任务\n{summary}\n\n是否批准？",
+                    ["是", "否"]
                 )
-            if approval and any(kw in approval.lower() for kw in ["no", "not", "dis", "reject", "revise", "n"]):
-                reason = ctx.ask("Please explain why the plan needs revision, so I can improve it. Type 'cancel' to cancel the task.")
-                plan._rejection_reason = reason or "No reason given."
-                if reason and "cancel" in reason.lower():
-                    return "Task cancelled by user. Please stop and wait for new instructions."
-                return f"Plan not approved. Feedback: {plan._rejection_reason}. Please revise the plan based on this feedback."
+            if approval != "是":
+                return "用户已拒绝，任务取消。请等待新的指令。"
             plan.approve()
-            return "Plan approved and ready for execution."
+            return "计划已批准，开始执行。"
         return result
 
     if action == "approve":
