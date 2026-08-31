@@ -218,7 +218,12 @@ def upload_file(project_id: str, filename: str, content_base64: str):
     size = len(data)
     db.add_file(project_id, filename, str(dest), size)
     return json.dumps({"filename": filename, "size": size})
-    db.add_file(project_id, filename, str(dest), size)
+
+@eel.expose
+def delete_file(file_id: int):
+    """删除项目文件。"""
+    db.delete_file(file_id)
+    return json.dumps({"ok": True})
     return json.dumps({"filename": filename, "size": size})
 
 if __name__ == "__main__":
