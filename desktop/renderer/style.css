@@ -61,6 +61,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); over
 .message.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
 .message.assistant .bubble { background: var(--bg3); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .message .bubble code { font-family: var(--mono); font-size: 13px; background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 4px; }
+.message .bubble h2, .message .bubble h3, .message .bubble h4 { margin: 12px 0 6px; font-weight: 600; }
+.message .bubble h2 { font-size: 16px; color: var(--accent2); }
+.message .bubble h3 { font-size: 15px; color: var(--text); }
+.message .bubble h4 { font-size: 14px; color: var(--text2); }
 .message .bubble pre { margin: 8px 0; padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.3); overflow-x: auto; font-family: var(--mono); font-size: 13px; }
 .message .bubble pre code { background: none; padding: 0; }
 

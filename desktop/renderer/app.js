@@ -202,6 +202,11 @@ function formatContent(text) {
   // Bold: **text** → <strong>text</strong> (must be before escaping other chars)
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
+  // Headers: ## Title → <h3>Title</h3>, ### Title → <h4>Title</h4>
+  html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+
   // Inline code: `code` → <code>code</code>
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
