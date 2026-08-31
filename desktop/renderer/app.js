@@ -278,7 +278,7 @@ async function refreshFiles() {
   try {
     const files = await api('list_files', state.currentProject.id);
     document.getElementById('filesList').innerHTML = files.map(f => `
-      <div class="file-item"><span class="name">${esc(f.filename)}</span><span class="size">${(f.size/1024).toFixed(1)} KB</span></div>
+      <div class="file-item"><span class="name">${esc(f.filename)}</span><span class="size">${(f.size/1024).toFixed(1)} KB</span><button class="file-del-btn" onclick="deleteFile(${f.id}, '${esc(f.filename)}')">✕</button></div>
     `).join('');
   } catch (e) { toast('Failed to load files'); }
 }
@@ -324,6 +324,15 @@ async function uploadFilesToProject(event) {
     await refreshFiles();
     toast('Files uploaded');
   } catch (e) { toast('Failed to upload files: ' + e.message); }
+}
+
+async function deleteFile(fileId, filename) {
+  if (!confirm('Delete ' + filename + '?')) return;
+  try {
+    await api('delete_file', fileId);
+    await refreshFiles();
+    toast('File deleted');
+  } catch(e) { toast('Failed to delete file'); }
 }
 
 // ===== Utils =====
