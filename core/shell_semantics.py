@@ -116,11 +116,18 @@ def _get_cmd_args(node) -> list[str]:
 
 def _analyze_regex(command: str) -> tuple[str, str]:
     """正则降级分析。"""
-    # 检查是否涉及受保护路径
     import re
+
+    # 判断是否为破坏性操作
+    is_destructive = bool(re.search(r"\brm\s|find.*-delete|find.*-exec\s*rm|>|dd\s+if=|mv\s+|shutdown|reboot|poweroff|mkfs|format", command))
+
+    # 受保护路径只在破坏性操作时标记为 CRITICAL
     for pat in _PROTECTED_PATTERNS:
         if re.search(pat, command, re.IGNORECASE):
-            return ("CRITICAL", f"Command targets protected resource: {pat}")
+            if is_destructive:
+                return ("CRITICAL", f"Destructive operation on protected resource: {pat}")
+            else:
+                return ("MEDIUM", f"Read-only operation mentions protected resource: {pat}")
 
     # 检查 "下载 | 执行" 组合
     if re.search(r"(curl|wget)\s+.*\|\s*(bash|sh|python)", command):
