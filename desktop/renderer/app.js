@@ -482,22 +482,46 @@ async function refreshTaskHistory() {
         // Extract structured actions from agent output
         const actions = [];
         let result = 'Success';
+        let resultDetail = '';
         const lines = (m.content || '').split('\n');
+        let workspacePath = '';
+        // Try to find workspace path from the last line
         for (const line of lines) {
           const s = line.trim();
+          if (s.startsWith('> 工作目录：')) {
+            workspacePath = s.replace('> 工作目录：', '').trim();
+          }
+        }
+        for (const line of lines) {
+          const s = line.trim();
+          // File operations - convert to natural language
           if (s.startsWith('Edited ')) {
             const file = s.replace('Edited ', '').split(' ')[0];
-            actions.push('modify_file: ' + file);
+            const strategy = s.includes('strategy:') ? s.match(/strategy: ([^)]+)/)?.[1] : '';
+            let desc = '修改了 ' + file;
+            if (strategy) desc += '（' + strategy + '匹配）';
+            if (workspacePath) desc += '，位于 ' + workspacePath;
+            actions.push(desc);
           } else if (s.startsWith('Written ') || s.startsWith('Created ')) {
             const file = s.replace('Written ', '').replace('Created ', '').split(' ')[0];
-            actions.push('create_file: ' + file);
+            let desc = '创建了 ' + file;
+            if (workspacePath) desc += '，位于 ' + workspacePath;
+            actions.push(desc);
           } else if (s.startsWith('Read file:')) {
             const file = s.replace('Read file:', '').trim().split(' ')[0];
-            actions.push('read_file: ' + file);
-          } else if (s.startsWith('File not found') || s.startsWith('Lint:')) {
-            actions.push('analyze_error: ' + s.substring(0, 80));
+            actions.push('读取了 ' + file);
+          } else if (s.startsWith('File not found')) {
+            const file = s.replace('File not found:', '').trim();
+            actions.push('查找文件 ' + file + '（未找到）');
+          } else if (s.startsWith('Lint:')) {
+            actions.push('语法检查：' + s.substring(5, 80));
+          } else if (s.startsWith('run_command') || s.includes('python ') || s.includes('pytest ') || s.includes('node ')) {
+            actions.push('执行命令：' + s.substring(0, 60));
           } else if (s.startsWith('⚠️') || s.startsWith('Error:')) {
             result = 'Failed';
+            resultDetail = s.substring(0, 80);
+          } else if (s.includes('tests passed') || s.includes('OK') || s.includes('全部通过')) {
+            resultDetail = '测试全部通过';
           }
         }
         // Summarize the user request
@@ -507,6 +531,7 @@ async function refreshTaskHistory() {
             summary: summary,
             actions: actions.slice(0, 6),
             result: result,
+            resultDetail: resultDetail,
             request: currentRequest.substring(0, 60) + (currentRequest.length > 60 ? '...' : '')
           });
         }
@@ -520,12 +545,8 @@ async function refreshTaskHistory() {
         <div class="task-item">
           <div class="task-request">📋 ${esc(t.summary)}</div>
           <div class="task-meta" style="color:var(--text2);font-size:11px;margin-top:2px">${esc(t.request)}</div>
-          <div class="task-actions">${t.actions.map(a => {
-            const [type, ...rest] = a.split(': ');
-            const icon = type === 'modify_file' ? '✏️' : type === 'create_file' ? '📄' : type === 'read_file' ? '👁️' : type === 'analyze_error' ? '🔍' : '⚙️';
-            return '<span>' + icon + ' ' + esc(a) + '</span>';
-          }).join('')}</div>
-          <div class="task-result" style="font-size:12px;margin-top:4px;color:${t.result === 'Success' ? 'var(--success)' : 'var(--danger)'}">${t.result === 'Success' ? '✅ 成功' : '❌ 失败'}</div>
+          <div class="task-actions" style="margin-top:4px">${t.actions.map(a => '<span style="display:block;font-size:12px;color:var(--text);padding:1px 0">• ' + esc(a) + '</span>').join('')}</div>
+          <div class="task-result" style="font-size:12px;margin-top:4px;color:${t.result === 'Success' ? 'var(--success)' : 'var(--danger)'}">${t.result === 'Success' ? '✅ 成功' : '❌ 失败'}${t.resultDetail ? ' - ' + esc(t.resultDetail) : ''}</div>
         </div>
       `).join('');
     }
