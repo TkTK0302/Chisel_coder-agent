@@ -165,14 +165,18 @@ def list_workspace(project_id: str):
     for root, dirs, files in os.walk(ws):
         dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
         rel = os.path.relpath(root, ws)
+        if rel == ".":
+            prefix = ""
+        else:
+            prefix = rel.replace("\\", "/") + "/"
         for d in sorted(dirs):
-            items.append({"path": os.path.join(rel, d).replace("\\", "/"), "type": "dir"})
+            items.append({"path": prefix + d, "type": "dir"})
         for f in sorted(files):
             if f.startswith('.'):
                 continue
             fp = os.path.join(root, f)
             size = os.path.getsize(fp)
-            items.append({"path": os.path.join(rel, f).replace("\\", "/"), "type": "file", "size": size})
+            items.append({"path": prefix + f, "type": "file", "size": size})
     return json.dumps(items)
 
 @eel.expose
