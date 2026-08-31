@@ -1,14 +1,61 @@
 let state = { projects: [], currentProject: null, conversations: [], currentConv: null, messages: [], loading: false };
 
-function api(name, ...args) {
-  if (typeof eel !== 'undefined') {
-    return eel[name](...args)().then(r => JSON.parse(r));
+// ===== API Bridge =====
+async function api(name, ...args) {
+  try {
+    if (typeof eel !== 'undefined') {
+      const result = await eel[name](...args)();
+      return typeof result === 'string' ? JSON.parse(result) : result;
+    }
+    if (typeof window.api !== 'undefined' && window.api[name]) {
+      return await window.api[name](...args);
+    }
+    // Fallback: direct HTTP (FastAPI mode)
+    const apiMap = {
+      'list_projects': ['GET', '/api/projects'],
+      'create_project': ['POST', '/api/projects', (n) => ({name: n})],
+      'delete_project': ['DELETE', '/api/projects/{0}'],
+      'list_conversations': ['GET', '/api/projects/{0}/conversations'],
+      'create_conversation': ['POST', '/api/projects/{0}/conversations', (p, t) => ({title: t})],
+      'delete_conversation': ['DELETE', '/api/conversations/{0}'],
+      'list_messages': ['GET', '/api/conversations/{0}/messages'],
+      'send_message': ['POST', '/api/conversations/{0}/messages', (c, msg) => ({content: msg})],
+      'list_files': ['GET', '/api/projects/{0}/files'],
+      'upload_file': ['POST', '/api/projects/{0}/files'],
+      'delete_file': ['DELETE', '/api/projects/files/{0}'],
+    };
+    const [method, path, bodyFn] = apiMap[name] || [];
+    if (!path) throw new Error('Unknown API: ' + name);
+    const url = 'http://127.0.0.1:8765' + path.replace('{0}', args[0]);
+    const opts = { method, headers: {} };
+    if (bodyFn) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(bodyFn(...args)); }
+    const resp = await fetch(url, opts);
+    return await resp.json();
+  } catch (e) {
+    toast('API Error: ' + e.message);
+    throw e;
   }
-  return window.api[name](...args);
 }
 
-async function init() { await loadProjects(); if (state.projects.length > 0) selectProject(state.projects[0].id); }
+// ===== Init =====
+async function init() {
+  try {
+    await loadProjects();
+    if (state.projects.length > 0) selectProject(state.projects[0].id);
+  } catch (e) {
+    // Retry after a delay (Eel might not be ready yet)
+    setTimeout(async () => {
+      try {
+        await loadProjects();
+        if (state.projects.length > 0) selectProject(state.projects[0].id);
+      } catch (e2) {
+        toast('Failed to connect to backend. Make sure the server is running.');
+      }
+    }, 1000);
+  }
+}
 
+// ===== Projects =====
 async function loadProjects() {
   state.projects = await api('list_projects');
   renderProjects();
@@ -18,11 +65,18 @@ function renderProjects() {
   const el = document.getElementById('projectList');
   const search = (document.getElementById('projectSearch').value || '').toLowerCase();
   const filtered = state.projects.filter(p => p.name.toLowerCase().includes(search));
-  el.innerHTML = filtered.map(p => `<div class="project-item ${state.currentProject?.id === p.id ? 'active' : ''}" onclick="selectProject('${p.id}')"><div class="name">${esc(p.name)}</div><div class="meta">${new Date(p.created_at).toLocaleDateString()}</div><button class="del-btn" onclick="event.stopPropagation(); deleteProject('${p.id}')">✕</button></div>`).join('');
+  el.innerHTML = filtered.map(p => `
+    <div class="project-item ${state.currentProject?.id === p.id ? 'active' : ''}" onclick="selectProject('${p.id}')">
+      <div class="name">${esc(p.name)}</div>
+      <div class="meta">${new Date(p.created_at).toLocaleDateString()}</div>
+      <button class="del-btn" onclick="event.stopPropagation(); deleteProject('${p.id}')">✕</button>
+    </div>
+  `).join('');
 }
 
 async function selectProject(id) {
   state.currentProject = state.projects.find(p => p.id === id);
+  if (!state.currentProject) return;
   state.currentConv = null; state.messages = [];
   document.getElementById('emptyState').classList.add('hidden');
   document.getElementById('chatView').classList.remove('hidden');
@@ -35,24 +89,31 @@ async function selectProject(id) {
 
 async function createProject() {
   showModal('New Project', 'Project name...', async (name) => {
-    if (!name || !name.trim()) return;
-    await api('create_project', name.trim());
-    await loadProjects();
-    if (state.projects[0]) selectProject(state.projects[0].id);
-    toast('Project created');
+    if (!name || !name.trim()) { toast('Please enter a project name'); return; }
+    try {
+      await api('create_project', name.trim());
+      await loadProjects();
+      if (state.projects.length > 0) selectProject(state.projects[0].id);
+      toast('Project created: ' + name.trim());
+    } catch (e) {
+      toast('Failed to create project');
+    }
   });
 }
 
 async function deleteProject(id) {
   if (!confirm('Delete this project and all its data?')) return;
-  await api('delete_project', id);
-  state.currentProject = null; state.currentConv = null; state.messages = [];
-  document.getElementById('chatView').classList.add('hidden');
-  document.getElementById('emptyState').classList.remove('hidden');
-  await loadProjects();
-  toast('Project deleted');
+  try {
+    await api('delete_project', id);
+    state.currentProject = null; state.currentConv = null; state.messages = [];
+    document.getElementById('chatView').classList.add('hidden');
+    document.getElementById('emptyState').classList.remove('hidden');
+    await loadProjects();
+    toast('Project deleted');
+  } catch (e) { toast('Failed to delete project'); }
 }
 
+// ===== Conversations =====
 async function loadConversations() {
   if (!state.currentProject) return;
   state.conversations = await api('list_conversations', state.currentProject.id);
@@ -74,7 +135,8 @@ function renderConversations() {
 
 async function selectConversation(id) {
   state.currentConv = state.conversations.find(c => c.id === id);
-  document.getElementById('chatTitle').textContent = state.currentConv?.title || 'Chat';
+  if (!state.currentConv) return;
+  document.getElementById('chatTitle').textContent = state.currentConv.title;
   state.messages = await api('list_messages', id);
   renderMessages();
   renderConversations();
@@ -82,19 +144,30 @@ async function selectConversation(id) {
 
 async function newConversation() {
   if (!state.currentProject) return;
-  const c = await api('create_conversation', state.currentProject.id, 'New Chat');
-  await loadConversations();
-  selectConversation(c.id);
+  try {
+    const c = await api('create_conversation', state.currentProject.id, 'New Chat');
+    await loadConversations();
+    selectConversation(c.id);
+  } catch (e) { toast('Failed to create conversation'); }
 }
 
+// ===== Messages =====
 function renderMessages() {
   const el = document.getElementById('chatMessages');
-  el.innerHTML = state.messages.map(m => `<div class="message ${m.role}"><div class="avatar">${m.role === 'user' ? 'You' : '◇'}</div><div class="bubble">${formatContent(m.content)}</div></div>`).join('');
+  el.innerHTML = state.messages.map(m => `
+    <div class="message ${m.role}">
+      <div class="avatar">${m.role === 'user' ? 'You' : '◇'}</div>
+      <div class="bubble">${formatContent(m.content)}</div>
+    </div>
+  `).join('');
   el.scrollTop = el.scrollHeight;
 }
 
 function formatContent(text) {
-  return esc(text).replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>');
+  return esc(text)
+    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\n/g, '<br>');
 }
 
 async function sendMessage() {
@@ -116,6 +189,7 @@ async function sendMessage() {
 function handleKeydown(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
 function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 200) + 'px'; }
 
+// ===== Files =====
 async function showFiles() {
   const panel = document.getElementById('filesPanel');
   panel.classList.toggle('hidden');
@@ -125,41 +199,66 @@ function toggleFiles() { document.getElementById('filesPanel').classList.add('hi
 
 async function refreshFiles() {
   if (!state.currentProject) return;
-  const files = await api('list_files', state.currentProject.id);
-  document.getElementById('filesList').innerHTML = files.map(f => `<div class="file-item"><span class="name">${esc(f.filename)}</span><span class="size">${(f.size/1024).toFixed(1)} KB</span></div>`).join('');
+  try {
+    const files = await api('list_files', state.currentProject.id);
+    document.getElementById('filesList').innerHTML = files.map(f => `
+      <div class="file-item"><span class="name">${esc(f.filename)}</span><span class="size">${(f.size/1024).toFixed(1)} KB</span></div>
+    `).join('');
+  } catch (e) { toast('Failed to load files'); }
 }
 
 async function uploadFile() {
   if (!state.currentProject) return;
-  if (typeof window.electron !== 'undefined') {
-    const paths = await window.electron.selectFile();
-    if (!paths) return;
-    for (const p of paths) {
-      const name = p.split(/[/\\]/).pop();
-      await api('upload_file', state.currentProject.id, p, name);
+  try {
+    if (typeof window.electron !== 'undefined' && window.electron.selectFile) {
+      const paths = await window.electron.selectFile();
+      if (!paths) return;
+      for (const p of paths) {
+        const name = p.split(/[/\\]/).pop();
+        await api('upload_file', state.currentProject.id, p, name);
+      }
+    } else {
+      document.getElementById('fileInput').click();
     }
-  } else {
-    document.getElementById('fileInput').click();
-  }
-  await refreshFiles();
-  toast('Files uploaded');
+    await refreshFiles();
+    toast('Files uploaded');
+  } catch (e) { toast('Failed to upload files'); }
 }
 
 async function uploadFilesToProject(event) {
   if (!state.currentProject) return;
-  for (const file of event.target.files) {
-    await api('upload_file', state.currentProject.id, file.path, file.name);
-  }
-  await refreshFiles();
-  toast('Files uploaded');
+  try {
+    for (const file of event.target.files) {
+      await api('upload_file', state.currentProject.id, file.path, file.name);
+    }
+    await refreshFiles();
+    toast('Files uploaded');
+  } catch (e) { toast('Failed to upload files'); }
 }
 
+// ===== Utils =====
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function toast(msg) { const el = document.getElementById('toast'); el.textContent = msg; el.classList.remove('hidden'); setTimeout(() => el.classList.add('hidden'), 2500); }
 
+// ===== Modal =====
 let modalCallback = null;
-function showModal(title, placeholder, callback) { document.getElementById('modalTitle').textContent = title; document.getElementById('modalInput').placeholder = placeholder || ''; document.getElementById('modalInput').value = ''; document.getElementById('modal').classList.remove('hidden'); modalCallback = callback; setTimeout(() => document.getElementById('modalInput').focus(), 100); }
+function showModal(title, placeholder, callback) {
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalInput').placeholder = placeholder || '';
+  document.getElementById('modalInput').value = '';
+  document.getElementById('modal').classList.remove('hidden');
+  modalCallback = callback;
+  setTimeout(() => document.getElementById('modalInput').focus(), 100);
+}
 function closeModal() { document.getElementById('modal').classList.add('hidden'); modalCallback = null; }
-function confirmModal() { const val = document.getElementById('modalInput').value; closeModal(); if (modalCallback) modalCallback(val); }
+function confirmModal() {
+  const val = document.getElementById('modalInput').value;
+  closeModal();
+  if (modalCallback) modalCallback(val);
+}
 
+// ===== Error handling =====
+window.onerror = function(msg, url, line) { toast('Error: ' + msg); };
+
+// ===== Start =====
 document.addEventListener('DOMContentLoaded', init);

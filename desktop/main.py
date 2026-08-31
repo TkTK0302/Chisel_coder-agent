@@ -96,6 +96,6 @@ def upload_file(project_id: str, filepath: str, filename: str):
     return json.dumps({"filename": filename, "size": size})
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9876
     print(f"Chisel Desktop starting on http://localhost:{port}", flush=True)
     eel.start("index.html", port=port, size=(1400, 900), position=(100, 50))
