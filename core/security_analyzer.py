@@ -58,7 +58,10 @@ RISK_PATTERNS: list[tuple[re.Pattern, SecurityRisk, str, str]] = [
 # 受保护路径模式
 _PROTECTED_PATTERNS = [
     (r"\.git[/\\]", ".git directory", "irreversible git history loss"),
+    (r"\.git$", ".git directory", "irreversible git history loss"),
     (r"\.env[^.]*", ".env file", "API key and credential loss"),
+    (r"\.pytest_cache[/\\]", ".pytest_cache directory", "test cache"),
+    (r"\.pytest_cache$", ".pytest_cache directory", "test cache"),
     (r"\.vscode[/\\]", ".vscode directory", "IDE configuration loss"),
     (r"\.ssh[/\\]", ".ssh directory", "SSH key loss"),
     (r"\.gitignore", ".gitignore file", "git ignore rules loss"),
