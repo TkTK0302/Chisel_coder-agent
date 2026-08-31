@@ -378,6 +378,7 @@ async function refreshFileExplorer() {
       }
     });
     tree.innerHTML = html || '<div class="item" style="color:var(--text2);padding:12px">Empty workspace</div>';
+    toast('Workspace refreshed');
   } catch(e) { toast('Failed to load workspace'); }
 }
 
