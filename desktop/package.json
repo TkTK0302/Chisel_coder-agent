@@ -1,0 +1,16 @@
+{
+  "name": "chisel-desktop",
+  "version": "1.0.0",
+  "description": "Chisel - AI Coding Agent Desktop",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "build": {
+    "appId": "com.chisel.agent",
+    "productName": "Chisel",
+    "files": ["main.js", "preload.js", "renderer/**/*"],
+    "win": { "target": "nsis" }
+  }
+}

@@ -13,3 +13,5 @@ demo_workspace/
 .chisel/
 *.log
 .pytest_cache/
+desktop/node_modules/
+desktop/package-lock.json

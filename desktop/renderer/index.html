@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chisel</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="layout">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-search">
+          <input type="text" id="projectSearch" placeholder="Search projects..." oninput="renderProjects()">
+        </div>
+      </div>
+      <div class="sidebar-content" id="projectList"></div>
+      <div class="sidebar-footer">
+        <button class="btn btn-primary" onclick="createProject()">+ New Project</button>
+      </div>
+    </aside>
+    <main id="main">
+      <div id="emptyState" class="empty-state">
+        <div class="empty-icon">◇</div>
+        <h1>Chisel</h1>
+        <p>Select a project or create a new one to get started.</p>
+        <button class="btn btn-primary btn-lg" onclick="createProject()">+ New Project</button>
+      </div>
+      <div id="chatView" class="chat-view hidden">
+        <div class="chat-header">
+          <div class="chat-header-left">
+            <h2 id="chatTitle">New Chat</h2>
+            <span class="chat-project-name" id="chatProjectName"></span>
+          </div>
+          <div class="chat-header-right">
+            <button class="btn btn-sm" onclick="showFiles()">📁 Files</button>
+            <button class="btn btn-sm" onclick="newConversation()">+ New Chat</button>
+          </div>
+        </div>
+        <div class="chat-messages" id="chatMessages"></div>
+        <div id="filesPanel" class="files-panel hidden">
+          <div class="files-header"><span>Project Files</span><button class="btn btn-sm" onclick="toggleFiles()">✕</button></div>
+          <div class="files-list" id="filesList"></div>
+          <div class="files-upload"><button class="btn btn-sm" onclick="uploadFile()">+ Upload File</button></div>
+        </div>
+        <div class="chat-input">
+          <div class="input-wrapper">
+            <textarea id="messageInput" placeholder="Ask Chisel to do something..." rows="1" oninput="autoResize(this)" onkeydown="handleKeydown(event)"></textarea>
+            <button class="btn-send" id="sendBtn" onclick="sendMessage()">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+            </button>
+          </div>
+          <div class="input-footer">
+            <label class="file-label"><input type="file" id="fileInput" hidden multiple onchange="uploadFilesToProject(event)"><span>📎 Attach files</span></label>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div id="toast" class="toast hidden"></div>
+<div id="modal" class="modal hidden">
+  <div class="modal-content">
+    <h3 id="modalTitle">New Project</h3>
+    <input type="text" id="modalInput" placeholder="Project name..." class="modal-input">
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmModal()">Create</button>
+    </div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
