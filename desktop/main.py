@@ -27,11 +27,13 @@ def list_projects():
 
 @eel.expose
 def select_folder():
-    """打开文件夹选择对话框。"""
+    """打开文件夹选择对话框（置顶显示）。"""
     import tkinter as tk
     from tkinter import filedialog
     root = tk.Tk()
     root.withdraw()
+    root.attributes('-topmost', True)  # 置顶
+    root.lift()  # 提到最前
     folder = filedialog.askdirectory(title="选择项目文件夹")
     root.destroy()
     return folder or ""

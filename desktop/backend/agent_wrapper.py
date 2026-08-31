@@ -55,6 +55,7 @@ def run_agent(task: str, workspace: str, on_output=None, model: str = "deepseek-
 
 def _clean_output(text: str) -> str:
     """从 agent 的完整输出中提取用户可见的最终回答。"""
+    # 1. 尝试提取 ✅ 任务完成 之后的内容
     if "✅ 任务完成" in text:
         parts = text.split("✅ 任务完成")
         last = parts[-1]
@@ -63,7 +64,8 @@ def _clean_output(text: str) -> str:
         started = False
         for line in lines:
             if not started:
-                if line.strip() and not line.strip().startswith("=") and "共" not in line and "步" not in line:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("=") and "共" not in stripped and "步" not in stripped:
                     started = True
                     content_lines.append(line)
             else:
@@ -73,17 +75,12 @@ def _clean_output(text: str) -> str:
             if cleaned:
                 return cleaned
 
-    if "**总结：**" in text or "**总结**" in text:
-        parts = re.split(r"\*\*总结[：]?\*\*", text)
-        if len(parts) > 1:
-            return parts[-1].strip()
-
+    # 2. 如果没有 ✅ 完成标记，显示所有输出但去掉调试前缀
     lines = text.split("\n")
     filtered = []
     for line in lines:
         stripped = line.strip()
-        if not stripped:
-            continue
+        # 跳过调试行
         if stripped.startswith("[stderr]") or "CryptographyDeprecationWarning" in stripped:
             continue
         if stripped.startswith("[Plan mode:") or stripped.startswith("[步骤"):
@@ -92,10 +89,15 @@ def _clean_output(text: str) -> str:
             continue
         if stripped.startswith("⚠️") or stripped.startswith("⛔"):
             continue
-        if stripped.startswith("===") and "完成" not in stripped:
-            continue
         if stripped == "✅ 任务完成":
             continue
+        # 保留 === 分隔线（只在有内容时保留一条）
+        if stripped.startswith("===") and "完成" not in stripped:
+            if filtered and filtered[-1].strip() != "---":
+                filtered.append("---")
+            continue
+        # 保留空行和所有其他内容
         filtered.append(line)
 
-    return "\n".join(filtered).strip() if filtered else text[:5000]
+    result = "\n".join(filtered).strip()
+    return result if result else text[:5000]
