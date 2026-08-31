@@ -89,18 +89,19 @@ async function selectProject(id) {
 }
 
 async function changeWorkspace() {
-  if (!state.currentProject) return;
+  if (!state.currentProject) { toast('No project selected'); return; }
+  toast('Opening folder picker...');
   try {
     const folder = await eel.select_folder()();
-    if (folder) {
-      // Update workspace in database via Eel
-      await api('update_workspace', state.currentProject.id, folder);
-      await loadProjects();
-      state.currentProject = state.projects.find(p => p.id === state.currentProject.id);
+    if (!folder) { toast('No folder selected'); return; }
+    await api('update_workspace', state.currentProject.id, folder);
+    await loadProjects();
+    state.currentProject = state.projects.find(p => p.id === state.currentProject.id);
+    if (state.currentProject) {
       document.getElementById('chatProjectName').textContent = state.currentProject.name + ' · ' + state.currentProject.workspace;
-      toast('Workspace updated');
     }
-  } catch (e) { toast('Failed to change workspace'); }
+    toast('Workspace updated to: ' + folder);
+  } catch (e) { toast('Error: ' + e.message); }
 }
 
 async function createProject() {
