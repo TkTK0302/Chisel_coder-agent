@@ -1,8 +1,10 @@
-"""项目规模检测：决定使用 Cline 模式（小项目）还是 OpenHands 模式（大项目）。
+"""项目规模检测：决定使用 single 模式（单 Agent 两阶段）还是 multi 模式（多 Agent 委托）。
 
 策略：
-  - 小项目（Cline）：文件数 < 30 且 总行数 < 3000 且 符号数 < 50
-  - 大项目（OpenHands）：任意指标超过阈值
+  - 文件数 ≤ MIN_FILES_FOR_MULTI（2 个）：强制 single，单文件/双文件任务 code_navigate
+    比 multi-agent 管线高效得多
+  - 小项目（single）：文件数 < 30 且 总行数 < 3000 且 符号数 < 50
+  - 大项目（multi）：文件数 ≥ 30 或 总行数 ≥ 3000 或 符号数 ≥ 50（且文件数 > 2）
 
 检测指标：
   - 文件数（仅统计 .py / .js / .ts / .go / .rs / .java / .c / .cpp）
@@ -20,6 +22,7 @@ _SKIP_DIRS = {".git", ".chisel", "__pycache__", "node_modules", ".venv", ".pytes
 _SOURCE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp"}
 
 # 小项目阈值
+MIN_FILES_FOR_MULTI = 5   # 文件数 ≤ 4 时强制 single，不检查行数/符号数
 MAX_FILES = 30
 MAX_LINES = 3000
 MAX_SYMBOLS = 50
@@ -50,8 +53,13 @@ def detect_mode(workspace: str) -> str:
                         pass
             except OSError:
                 pass
-            if files > MAX_FILES or lines > MAX_LINES or symbols > MAX_SYMBOLS:
+            # 早期退出：文件数超过上限直接判 multi
+            if files > MAX_FILES:
                 return "multi"
+            if lines > MAX_LINES or symbols > MAX_SYMBOLS:
+                # 但文件数 ≤ 2 时不判 multi — 单文件/双文件任务 single 更高效
+                if files > MIN_FILES_FOR_MULTI:
+                    return "multi"
 
     return "single"
 

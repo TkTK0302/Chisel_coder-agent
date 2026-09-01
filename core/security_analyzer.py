@@ -68,6 +68,74 @@ _PROTECTED_PATTERNS = [
 ]
 
 
+# 只读命令白名单 —— 这些命令不修改文件，永远不需要 LLM 分析
+_READONLY_CMDS = {
+    "cat", "head", "tail", "less", "more", "zcat", "bzcat", "xzcat",
+    "grep", "egrep", "fgrep", "rg", "ag",  # 搜索类
+    "sed", "awk", "cut", "tr", "sort", "uniq", "wc", "nl", "od", "hexdump", "xxd",  # 文本处理
+    "ls", "dir", "stat", "file", "du", "df", "tree",  # 文件信息
+    "find", "locate", "which", "whereis", "type",  # 查找（不带 -delete/-exec 的 find 是只读的）
+    "echo", "printf", "date", "env", "printenv", "pwd", "whoami", "hostname", "uname",  # 信息类
+    "diff", "cmp", "comm", "md5sum", "sha1sum", "sha256sum", "basename", "dirname", "realpath",  # 比较/路径
+    "ps", "top", "htop", "free", "vmstat", "iostat", "netstat", "ss", "lsof",  # 系统监控
+    "pgrep", "pidof",  # 进程查找
+    "docker ps", "docker images", "docker logs", "docker inspect", "docker stats",  # Docker 只读
+    "git log", "git show", "git diff", "git status", "git branch", "git tag", "git blame",  # Git 只读
+    "git config", "git remote", "git ls-files", "git rev-parse", "git rev-list", "git stash list",
+    "python", "python3",  # python 脚本执行（在沙盒里，不直接修改宿主文件）
+    "pip list", "pip show", "pip freeze",  # pip 只读
+    "npm list", "npm view", "npm outdated",  # npm 只读
+}
+
+
+def _is_readonly_command(command: str) -> bool:
+    """检查命令是否为纯只读操作（不修改任何文件）。
+
+    判断标准：
+    1. 基础命令在只读白名单中
+    2. 没有输出重定向（> / >>）写入文件
+    3. 没有管道到破坏性命令
+    4. sed 不带 -i（in-place edit）标志
+    5. find 不带 -delete 或 -exec
+    """
+    cmd = command.strip()
+
+    # 有输出重定向 → 可能写入文件，不是纯只读
+    if re.search(r"[^>]\s*>[^>]", cmd) or re.search(r">>\s*\S", cmd):
+        return False
+
+    # 检查管道目标：如果管道到非只读命令，则不是纯只读
+    if "|" in cmd:
+        pipes = [p.strip() for p in cmd.split("|")]
+        for pipe in pipes[1:]:  # 跳过第一个（管道源）
+            first_word = pipe.split()[0] if pipe.split() else ""
+            if first_word and first_word not in _READONLY_CMDS:
+                # 管道目标可能是破坏性命令，递归检查
+                if not _is_readonly_command(pipe):
+                    return False
+
+    # 提取基础命令名（第一个词，去除路径前缀）
+    first_word = cmd.split()[0] if cmd.split() else ""
+    base_cmd = first_word.split("/")[-1] if "/" in first_word else first_word
+
+    # 精确匹配
+    if cmd in _READONLY_CMDS or base_cmd in _READONLY_CMDS:
+        # sed -i 是写操作，不是只读
+        if base_cmd == "sed" and re.search(r"(?<!\w)-i\b", cmd):
+            return False
+        # find -delete / -exec 是写操作
+        if base_cmd == "find" and re.search(r"-(delete|exec|execdir)\b", cmd):
+            return False
+        return True
+
+    # 前缀匹配（如 "git log", "docker ps"）
+    for ro_cmd in _READONLY_CMDS:
+        if " " in ro_cmd and cmd.startswith(ro_cmd):
+            return True
+
+    return False
+
+
 class SecurityAnalyzer:
     def __init__(self, interactive: bool, policy: ConfirmationPolicy | None = None, client=None, workspace: str = ""):
         self.interactive = interactive
@@ -104,7 +172,11 @@ class SecurityAnalyzer:
             if pattern.search(command):
                 return risk, reason, consequence
 
-        # 4) LLM 辅助分析（可选）
+        # 4) 只读命令白名单 —— 纯只读操作不需要 LLM 分析，直接放行
+        if _is_readonly_command(command):
+            return SecurityRisk.LOW, "", ""
+
+        # 5) LLM 辅助分析（可选，仅对无法判定的非只读命令）
         if self.client and len(command) > 20:
             try:
                 llm_risk, llm_reason = self._llm_assess(command)

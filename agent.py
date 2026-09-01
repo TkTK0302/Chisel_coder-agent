@@ -75,8 +75,10 @@ Working guidelines (follow strictly):
 4. **Think before you act**: before each tool call, briefly explain your reasoning — what you assume, what you intend to do, and what you expect to happen.
 5. **Verify your work**: after any modification, run tests or validation commands to confirm correctness. Never assume changes work without verification.
 6. At the start of a task, use plan to decompose it into subtasks; update progress as you go.
-7. For large projects, prioritize rag_search / code_navigate to locate relevant code before editing.
-8. When the task is complete, call attempt_completion with a summary of what was done and the verification results.
+7. **Code analysis tasks**: When asked to analyze code structure (list classes, find methods, enumerate functions, etc.), use `code_navigate(action="symbols", path="file.py")` as your FIRST tool call. It returns all classes and functions with their signatures in a single call — 100x faster than grep or reading the file. DO NOT use bash grep to find classes or functions in Python files.
+8. For large projects, prioritize rag_search / code_navigate to locate relevant code before editing.
+9. **NEVER re-read the same file** unless you edited it and need to verify the change. One read is enough.
+10. When the task is complete, call attempt_completion with a summary of what was done and the verification results.
 
 IMPORTANT: Always include tool calls in your response until the task is completed. A response without tool calls will be considered as the final answer.
 
@@ -100,7 +102,7 @@ def _tool_hints() -> str:
     if "rag_search" in names:
         hints.append("- rag_search: search the codebase semantically before blindly grepping or reading entire files.")
     if "code_navigate" in names:
-        hints.append("- code_navigate: find function/class definitions, references, or list project symbols.")
+        hints.append("- code_navigate: the FASTEST way to explore Python code. Use action='symbols' to list ALL classes/functions/methods in a file at once. Use action='definition' to get a specific symbol's details. Use action='references' to find usages. Always prefer this over bash grep for Python files.")
     if "web_fetch" in names:
         hints.append("- web_fetch: fetch a web page to look up documentation or API references.")
     if "web_search" in names:

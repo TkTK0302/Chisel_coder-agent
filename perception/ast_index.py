@@ -19,13 +19,15 @@ NAV_SCHEMA = {
     "type": "function",
     "function": {
         "name": "code_navigate",
-        "description": "Navigate the codebase using Python AST analysis and grep fallback. "
-                       "definition: find where a function or class is defined (file path, line number, signature). "
-                       "references: find all usages of a symbol across the codebase. "
-                       "symbols: list all functions and classes in the project, optionally filtered by file or name. "
-                       "For Python files, uses AST parsing for accurate results; for other files, "
-                       "falls back to word-boundary grep. "
-                       "Call this tool in the same response as other independent tool calls.",
+        "description": "Navigate Python code using AST parsing (with grep fallback for non-Python files). "
+                       "Use action='symbols' to list ALL classes and functions in a file or project — "
+                       "this is the fastest way to answer 'what classes are in this file'. "
+                       "Use action='definition' to get a specific symbol's file path, line number, and signature. "
+                       "Use action='references' to find all usages of a symbol. "
+                       "For Python files, results come from AST parsing (accurate, instant); "
+                       "for other files, falls back to word-boundary grep. "
+                       "IMPORTANT: When asked to enumerate classes, methods, or functions in a Python file, "
+                       "ALWAYS use action='symbols' as your first call — it returns everything in one shot.",
         "parameters": {
             "type": "object",
             "properties": {

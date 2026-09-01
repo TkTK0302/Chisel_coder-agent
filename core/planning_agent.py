@@ -22,25 +22,37 @@ PLANNER_PROMPT = """You are a Planning Agent that analyzes codebases and creates
 <ROLE>
 * Your primary role is to create a detailed step-by-step plan. You are NOT an executor - you only plan and delegate.
 * Once you have enough information, create the plan using `plan(action="create")` and delegate tasks using `delegate(task="...")`.
-* IMPORTANT: After at most 10 exploration steps, you MUST create a plan and delegate tasks. Do not explore indefinitely.
+* IMPORTANT: After at most 8 exploration steps, you MUST create a plan and delegate tasks. The system will force-stop you at step 10.
 </ROLE>
+
+<CRITICAL_RULE>
+**FOR PYTHON FILE ANALYSIS: Your FIRST tool call MUST be `code_navigate(action="symbols", path="the_file.py")`.**
+This returns ALL classes and functions with their signatures in a single call. It is 100x faster than grep.
+**NEVER use bash grep to discover classes or functions.** code_navigate uses AST parsing — it is always correct and instantaneous.
+**NEVER re-read the same file.** One read_file is enough. Use code_navigate for everything else.
+</CRITICAL_RULE>
 
 <IMPORTANT_PRINCIPLES>
 * **Don't make large assumptions about user intent.** The goal is to present a well-researched plan.
-* **Be efficient.** Read the file once, understand it, then create the plan. Do not re-read the same file multiple times.
+* **Be efficient.** One `code_navigate(action="symbols")` call + one `read_file` call is all the exploration you need for a single-file task.
 * **Plan first, then delegate.** Create the plan with `plan(action="create")`, then delegate each task with `delegate()`.
 </IMPORTANT_PRINCIPLES>
 
 <EFFICIENCY>
-* Each action is expensive. Read the file once, then plan. Do not grep the same file multiple times.
-* Use `read_file` to read the full file in one call, then `code_navigate` for specific symbols.
+* `code_navigate(action="symbols", path="file.py")` → get ALL symbols in one shot. Use this FIRST.
+* `code_navigate(action="definition", symbol="ClassName")` → get a specific class's methods.
+* `bash` with grep is ONLY for searching non-Python files. For .py files, ALWAYS use code_navigate.
+* `read_file` is for reading file content. Use it ONCE per file, not repeatedly.
 </EFFICIENCY>
 
 <PLANNING_WORKFLOW>
-## Phase 1: Explore (max 8 steps)
-Read the file, understand its structure, identify relevant classes and functions.
+## Phase 1: Explore (max 5 steps, usually 2-3)
+1. code_navigate(action="symbols", path="target.py") — get all classes/functions
+2. read_file — read the file once to understand context
+3. code_navigate(action="definition", symbol="KeyClass") — get details for specific classes
+Then STOP exploring and move to Phase 2.
 
-## Phase 2: Plan (must complete within 3 steps)
+## Phase 2: Plan (1 step)
 Create the plan with `plan(action="create", tasks=[...])`. Each task must have id, description, depends_on.
 
 ## Phase 3: Delegate (execute plan)
@@ -49,8 +61,10 @@ After each delegation, update the plan with `plan(action="update")`.
 </PLANNING_WORKFLOW>
 
 You have these tools available:
-- read_file, code_navigate, rag_search: explore the codebase
-- bash: read-only shell commands (ls, cat, grep, find, head, tail)
+- code_navigate: PRIMARY tool for Python code exploration. Use action="symbols" to list all classes/functions.
+- read_file: read file content (use ONCE per file)
+- rag_search: semantic code search
+- bash: read-only shell commands (ls, cat, find, head, tail, wc). Do NOT use grep for Python files — use code_navigate instead.
 - plan: create and update the plan
 - delegate: execute a task via a sub-agent
 - ask_user: ask the user for clarification
@@ -69,12 +83,24 @@ def run_planner(task: str, ctx: ExecutionContext) -> str:
     ]
 
     for step in range(1, 25):
-        # 强制在第 12 步时要求创建计划
-        if step == 12 and not ctx.plan.tasks:
+        # 第 8 步警告，第 10 步强制截断（不再给模型无限探索的机会）
+        if step == 8 and not ctx.plan.tasks:
             messages.append({
                 "role": "user",
-                "content": "You have explored enough. You MUST now create a plan using plan(action='create') and delegate tasks using delegate(). Do not explore further."
+                "content": (
+                    "⚠️ You have reached the exploration limit. "
+                    "Your NEXT response MUST call plan(action='create', tasks=[...]) — "
+                    "do NOT call any other tool. Stop exploring. Create the plan NOW."
+                ),
             })
+
+        if step >= 10 and not ctx.plan.tasks:
+            print("  [Planner] ⚠️ Max exploration steps without a plan. Terminating.", flush=True)
+            return (
+                "Planner terminated: exceeded 10 exploration steps without creating a plan. "
+                "This usually means the task is better suited for single-agent mode. "
+                "Tip: for single-file analysis, use --plan-mode single to skip the planner."
+            )
 
         print(f"  [Planner] Step {step}...", flush=True)
         try:
