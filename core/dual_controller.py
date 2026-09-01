@@ -30,17 +30,10 @@ class DualController:
 
     def run(self, task: str, max_steps: int = 50) -> str:
         """Run the full planning + execution pipeline."""
-        print(f"\n{'='*60}", flush=True)
-        print("  Multi-Agent Mode: Planning Agent + Sub-agents", flush=True)
-        print(f"{'='*60}", flush=True)
+        print(f"\n  🧠 任务分析中...", flush=True)
 
         try:
             # Phase 1: Planning Agent creates plan and delegates tasks
-            print("\n  Phase 1: Planning Agent", flush=True)
-            print("  The planner explores the project, creates a plan,", flush=True)
-            print("  and delegates tasks to sub-agents.", flush=True)
-            print("-" * 40, flush=True)
-
             result = run_planner(task, self.ctx)
 
             # Phase 2: Collect results

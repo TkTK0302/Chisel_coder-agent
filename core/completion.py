@@ -24,7 +24,19 @@ COMPLETION_SCHEMA = {
             "properties": {
                 "result": {
                     "type": "string",
-                    "description": "任务完成总结，用中文说明你做了什么、结果如何",
+                    "description": (
+                        "任务完成总结，用中文。格式要求：\n"
+                        "1. 标题和下方内容之间不要有多余空行，标题后直接换行接内容\n"
+                        "2. 使用紧凑格式：每个小节标题后紧跟内容，不同小节之间只空一行\n"
+                        "3. 示例格式：\n"
+                        "修改内容\n"
+                        "- 在 compound_interest 函数签名中添加了 tax_rate: float = 0 参数\n"
+                        "- 在返回值中扣除了税费\n"
+                        "\n"
+                        "验证结果\n"
+                        "- 测试全部通过 ✓\n"
+                        "- 文件其他部分未受影响 ✓"
+                    ),
                 }
             },
             "required": ["result"],

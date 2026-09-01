@@ -47,15 +47,17 @@ def run_sub_agent(task: str, workspace: str, client, ctx) -> str:
     from llm import LLMClient
 
     sub_agent_id = f"sub_{len(_active_sub_agents) + 1}"
-    print(f"\n  [Sub-agent {sub_agent_id}] Starting task: {task[:100]}...", flush=True)
 
     messages = [
-        {"role": "system", "content": build_system_prompt(workspace)},
+        {"role": "system", "content": build_system_prompt(workspace, "")},
         {"role": "user", "content": task},
     ]
 
     info = {"id": sub_agent_id, "task": task, "step": 0}
     _active_sub_agents.append(info)
+
+    # 收集执行过程中的关键里程碑
+    milestones = []
 
     try:
         for step in range(1, 30):
@@ -63,21 +65,18 @@ def run_sub_agent(task: str, workspace: str, client, ctx) -> str:
             try:
                 resp = client.chat(messages, all_tools())
             except Exception as e:
-                print(f"    [Sub-agent {sub_agent_id}] LLM error: {e}", flush=True)
                 time.sleep(1)
                 continue
 
             msg = resp.choices[0].message
             if not getattr(msg, "tool_calls", None):
                 final = msg.content or ""
-                print(f"    [Sub-agent {sub_agent_id}] Completed ({step} steps)", flush=True)
                 return final
 
             messages.append(_assistant_msg(msg))
             for tc in msg.tool_calls:
                 name = tc.function.name
                 if name == "delegate":
-                    # Prevent nested delegation
                     result = "Cannot delegate from a sub-agent. Complete the task directly."
                 else:
                     try:
@@ -86,9 +85,36 @@ def run_sub_agent(task: str, workspace: str, client, ctx) -> str:
                         result = "Invalid JSON arguments."
                     else:
                         result = execute_tool(name, args, workspace, ctx)
-                        print(f"      [{step}] {name}: {str(result)[:200]}", flush=True)
+                        # 收集里程碑（只记录有意义的事件，不打印每步细节）
+                        if name == "code_navigate" and "definition" == args.get("action"):
+                            symbol = args.get("symbol", "")
+                            if symbol:
+                                milestones.append(f"📍 定位 {symbol}")
+                        elif name == "edit_file":
+                            path = args.get("path", "")
+                            if "Created" in result:
+                                milestones.append(f"✏️ 创建 {path}")
+                            elif "Edited" in result:
+                                milestones.append(f"✏️ 修改 {path}")
+                        elif name == "bash":
+                            cmd = args.get("command", "")
+                            if "test" in cmd or "pytest" in cmd:
+                                if "exit code 0" in result:
+                                    milestones.append("✅ 测试通过")
+                                else:
+                                    milestones.append("⚠️ 测试失败，分析中...")
+                            elif "pip install" in cmd:
+                                milestones.append("📦 安装依赖...")
+                        elif name == "attempt_completion":
+                            milestones.append("✅ 完成")
+
                 messages.append({"role": "tool", "tool_call_id": tc.id,
                                  "content": str(result)[:3000]})
+
+            # 每 3 步打印一次里程碑汇总
+            if step % 3 == 0 and milestones:
+                for m in milestones[-2:]:  # 只打印最近 2 个
+                    print(f"     {m}", flush=True)
 
         return "Sub-agent reached max steps."
     finally:

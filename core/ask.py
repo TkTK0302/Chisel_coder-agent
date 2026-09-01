@@ -34,7 +34,11 @@ ASK_SCHEMA = {
 
 
 def make_ask(interactive: bool):
-    """返回一个 ask(question, options) -> str 函数。"""
+    """返回一个 ask(question, options) -> str 函数。
+
+    返回值是用户选择的原始文本（如 "是"、"否"、"方案A"），
+    不做任何包装，方便调用方做精确比较。
+    """
 
     def ask(question: str, options: list[str] | None = None) -> str:
         if not interactive:
@@ -57,16 +61,19 @@ def make_ask(interactive: bool):
             ans = input("   你的选择> ").strip()
         except (EOFError, KeyboardInterrupt):
             return "用户未回答。请合理假设。"
-        return f"用户选择：{ans}"
+        return ans  # 返回原始答案，不加包装
 
     return ask
 
 
 def _handle_ask_user(ctx, args: dict) -> str:
-    return ctx.ask(
+    ans = ctx.ask(
         args.get("question", ""),
         args.get("options"),
     )
+    # 给模型看的上下文：告诉它用户选了什么
+    question = args.get("question", "")
+    return f"用户对「{question[:60]}」的回答：{ans}"
 
 
 register_tool(ASK_SCHEMA, _handle_ask_user)

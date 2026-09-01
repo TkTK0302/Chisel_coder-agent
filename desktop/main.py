@@ -46,7 +46,7 @@ def create_project(name: str, workspace_path: str = ""):
         ws = str(PROJECTS_DIR / name.replace(" ", "_"))
     Path(ws).mkdir(parents=True, exist_ok=True)
     project = db.create_project(name, ws)
-    db.create_conversation(project["id"], "New Chat")
+    db.create_conversation(project["id"], "Chat 1")
     return json.dumps(project)
 
 @eel.expose

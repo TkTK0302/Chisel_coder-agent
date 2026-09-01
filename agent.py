@@ -41,6 +41,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from core.runtime import build_runtime
 from core.dual_controller import DualController
+from core.context import KeyPointMemory
 import core.delegate_tool  # noqa: F401  （注册 delegate 工具）
 import core.completion  # noqa: F401  （注册 attempt_completion 工具）
 import env.terminal  # noqa: F401  （import 副作用：注册 terminal 工具）
@@ -68,28 +69,42 @@ You have access to the following tools to read, write, and execute code:
 - edit_file: apply a precise SEARCH/REPLACE edit to a file
 {tool_hints}
 
+<MANDATORY_PLAN_RULE>
+Your VERY FIRST tool call for EVERY task MUST be `plan(action="create", tasks=[...])`.
+This is NOT optional. Before making any changes, you MUST:
+1. Analyze the task and break it into clear subtasks
+2. Call plan(action="create") to submit the plan for user approval
+3. WAIT for the plan to be approved before executing any task
+The user will review your plan and choose "是" (approve) or "否" (reject).
+If rejected, create a NEW plan with a different approach — do NOT give up.
+</MANDATORY_PLAN_RULE>
+
 Working guidelines (follow strictly):
-1. Explore first: use bash to list the directory, then read relevant files. Never guess file contents.
-2. For small changes, use edit_file. Its original_lines must match the file content exactly (including whitespace). If the match fails, read the file again to see the actual content.
-3. For new files or large rewrites, use write_file.
-4. **Think before you act**: before each tool call, briefly explain your reasoning — what you assume, what you intend to do, and what you expect to happen.
-5. **Verify your work**: after any modification, run tests or validation commands to confirm correctness. Never assume changes work without verification.
-6. At the start of a task, use plan to decompose it into subtasks; update progress as you go.
-7. **Code analysis tasks**: When asked to analyze code structure (list classes, find methods, enumerate functions, etc.), use `code_navigate(action="symbols", path="file.py")` as your FIRST tool call. It returns all classes and functions with their signatures in a single call — 100x faster than grep or reading the file. DO NOT use bash grep to find classes or functions in Python files.
+1. **FIRST: Create a plan.** Your first tool call is ALWAYS plan(action="create"). Break the task into subtasks. Wait for approval before doing anything else.
+2. Explore: after plan is approved, use bash to list the directory, then read relevant files. Never guess file contents.
+3. For small changes, use edit_file. Its original_lines must match the file content exactly (including whitespace). If the match fails, read the file again to see the actual content.
+4. For new files or large rewrites, use write_file.
+5. **Think before you act**: before each tool call, briefly explain your reasoning.
+6. **Verify your work**: after any modification, run tests or validation commands to confirm correctness.
+7. **Code analysis tasks**: use `code_navigate(action="symbols", path="file.py")` as your FIRST exploratory tool call — 100x faster than grep. DO NOT use bash grep to find classes or functions in Python files.
 8. For large projects, prioritize rag_search / code_navigate to locate relevant code before editing.
-9. **NEVER re-read the same file** unless you edited it and need to verify the change. One read is enough.
-10. When the task is complete, call attempt_completion with a summary of what was done and the verification results.
+9. **NEVER re-read the same file** unless you edited it and need to verify the change.
+10. **When a command is blocked by security**: do NOT retry the same command. Find a safe alternative.
+11. When the task is complete, call attempt_completion with a summary of what was done and the verification results.
 
 IMPORTANT: Always include tool calls in your response until the task is completed. A response without tool calls will be considered as the final answer.
 
 {memory_section}
+
+{key_memory_section}
 """
 
 
-def _env_facts() -> str:
+def _env_facts(workspace: str = "") -> str:
+    wd = workspace or os.getcwd()
     return (
         f"Environment: {platform.system()} {platform.release()} | Python {platform.python_version()}"
-        f" | Working directory: {os.getcwd()}"
+        f" | Working directory: {wd}"
     )
 
 
@@ -116,14 +131,16 @@ def _tool_hints() -> str:
     return "\n".join(hints)
 
 
-def build_system_prompt(workspace: str) -> str:
+def build_system_prompt(workspace: str, key_memory_text: str = "") -> str:
     memory = load_memory(workspace)
     memory_section = f"用户的长期偏好（来自 MEMORY.md，请遵守）：\n{memory}\n" if memory else ""
+    key_memory_section = f"历史对话关键点（请在后续对话中参考）：\n{key_memory_text}\n" if key_memory_text else ""
     from perception.repo_map import get_repo_map
     repo_map = get_repo_map(workspace)
     return SYSTEM_PROMPT.format(
         memory_section=memory_section,
-        env=_env_facts(),
+        key_memory_section=key_memory_section,
+        env=_env_facts(workspace),
         repo_map=repo_map,
         tool_hints=_tool_hints(),
     )
@@ -160,6 +177,7 @@ class Agent:
         max_loops: int = 5,
         plan_mode: str = "auto",  # single | multi | auto
         sandbox_image: str | None = None,
+        window_size: int = 3,  # 滑动窗口保留轮数
     ):
         self.client = client
         self.workspace = workspace
@@ -170,41 +188,62 @@ class Agent:
         self.max_loops = max_loops
         self.plan_mode = plan_mode
         self.sandbox_image = sandbox_image
+        self.window_size = window_size
         self.ctx = None
+        self._history = None  # 交互模式下跨轮次保留对话历史
+        self._key_memory = KeyPointMemory()  # 关键点记忆
 
-    def run(self, task: str) -> str:
-        """跑一个任务，返回最终回答。"""
-        ctx = build_runtime(
-            self.workspace,
-            self.client,
-            interactive=sys.stdin.isatty(),
-            confirm_dangerous=confirm_dangerous,
-            loop_hard=self.max_loops,
-            mistake_hard=self.max_loops,
-            sandbox_mode=self.sandbox_mode,
-            sandbox_image=self.sandbox_image,
-            use_rag=self.use_rag,
-        )
-        self.ctx = ctx
-        ctx.task = task  # 给快照命名用
+    def run(self, task: str, continue_from_history: bool = False) -> str:
+        """跑一个任务，返回最终回答。
 
-        messages = [
-            {"role": "system", "content": build_system_prompt(self.workspace)},
-            {"role": "system", "content": ""},  # 计划占位，每轮 inject 改写
-            {"role": "user", "content": task},
-        ]
-        ctx.plan.inject(messages)
+        continue_from_history=True 时，复用上一轮的对话历史和上下文，
+        新任务作为 user 消息追加，实现跨轮次记忆。
+        """
+        if continue_from_history and self._history is not None and self.ctx is not None:
+            # 继续上一轮对话：复用 messages 和 ctx
+            messages = self._history
+            ctx = self.ctx
+            ctx.task = task
+            # 重置计划
+            ctx.plan = self._fresh_plan()
+            ctx.plan.inject(messages)
+            # 注入关键点记忆
+            km_text = self._key_memory.to_text()
+            if km_text:
+                messages.append({"role": "system", "content": f"历史对话关键点（请在后续对话中参考）：\n{km_text}"})
+            messages.append({"role": "user", "content": task})
+        else:
+            # 全新对话
+            ctx = build_runtime(
+                self.workspace,
+                self.client,
+                interactive=sys.stdin.isatty(),
+                confirm_dangerous=confirm_dangerous,
+                loop_hard=self.max_loops,
+                mistake_hard=self.max_loops,
+                sandbox_mode=self.sandbox_mode,
+                sandbox_image=self.sandbox_image,
+                use_rag=self.use_rag,
+            )
+            self.ctx = ctx
+            ctx.task = task
+
+            messages = [
+                {"role": "system", "content": build_system_prompt(self.workspace, self._key_memory.to_text() if not continue_from_history else "")},
+                {"role": "system", "content": ""},  # 计划占位，每轮 inject 改写
+                {"role": "user", "content": task},
+            ]
+            ctx.plan.inject(messages)
 
         # ---- 计划模式调度：Cline（小项目） vs OpenHands（大项目） ----
         import core.project_detector as detector
 
         mode = self.plan_mode
         if mode == "auto":
-            mode = detector.detect_mode(self.workspace)
+            mode = detector.detect_mode_from_task(task, self.workspace)
             print(f"  [Plan mode: {mode.upper()}] {detector.describe(self.workspace)}", flush=True)
 
         if mode == "multi":
-            print(f"\n{'='*60}\n  Multi-Agent Mode (Planning + Delegation)\n{'='*60}", flush=True)
             controller = DualController(self.workspace, self.client, ctx)
             return controller.run(task, self.max_steps)
 
@@ -215,6 +254,18 @@ class Agent:
         for step in range(1, self.max_steps + 1):
             # 发送前注入当前计划与循环/错误警告（此时上轮工具回合已闭合）
             self._pre_step_hook(messages, ctx)
+
+            # 兜底：第 2 步还没创建 plan → 强制注入要求
+            if step == 2 and not ctx.plan.tasks:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "⚠️ 你还没有创建计划。请立即调用 plan(action='create', tasks=[...]) "
+                        "将任务拆解为子任务。用户需要审批你的计划后才能执行。"
+                        "不要跳过这一步直接开始修改文件。"
+                    ),
+                })
+
             print(f"\n[步骤 {step}] 请求模型中…", flush=True)
             resp = self._chat_with_retry(messages)
             msg = resp.choices[0].message
@@ -223,7 +274,8 @@ class Agent:
             if not getattr(msg, "tool_calls", None):
                 final = msg.content or ""
                 print(f"\n{'='*60}\n✅ 任务完成（共 {step} 步）\n{'='*60}\n{final}\n")
-                self._cleanup(ctx)
+                self._cleanup(ctx, messages)
+                self._history = messages  # 保存对话历史，供下一轮继续
                 return final
 
             # 回填 assistant 消息（含 tool_calls），再逐条回填工具结果
@@ -246,7 +298,7 @@ class Agent:
                 if name not in ("plan", "attempt_completion"):
                     ctx.loop.note_call(name, args)
                 ctx.mistake.track(result, name)
-                # 长结果截断后再回填（OpenHands 风格：保存完整内容到文件）
+                # 长结果截断后再回填（行级截断：保留头尾 20 行，完整内容存文件）
                 messages.append({"role": "tool", "tool_call_id": tc.id,
                                  "content": ctx.context.truncate_output(
                                      result, save_dir=self.workspace, tool_prefix=name)})
@@ -255,12 +307,14 @@ class Agent:
             if getattr(ctx, "_completion_result", None):
                 final = ctx._completion_result
                 print(f"\n{'='*60}\n✅ 任务完成（共 {step} 步）\n{'='*60}\n{final}\n")
-                self._cleanup(ctx)
+                self._cleanup(ctx, messages)
+                self._history = messages
                 return final
 
-            # ---- 上下文管理：超限时整组压缩（确定性折叠 + 必要时 LLM 摘要） ----
+            # ---- 上下文管理：滑动窗口压缩（保护用户消息 + 最近 N 轮完整） ----
             ctx.context.compress_context(
-                messages, self.client, self.max_context_tokens, pinned=ctx.pinned()
+                messages, self.client, self.max_context_tokens,
+                window_size=self.window_size, key_memory=self._key_memory,
             )
 
             if ctx.loop.should_abort() or ctx.mistake.should_abort():
@@ -277,11 +331,13 @@ class Agent:
                         print(f"  ↳ Auto-rollback: {rollback}", flush=True)
                     except Exception:
                         pass
-                self._cleanup(ctx)
+                self._cleanup(ctx, messages)
+                self._history = messages
                 return "Task stopped due to suspected infinite loop. Changes preserved in workspace."
 
         print("\n⚠️ 达到最大步数，已强制停止。")
-        self._cleanup(ctx)
+        self._cleanup(ctx, messages)
+        self._history = messages
         return ""
 
     # --- 内部方法 ----------------------------------------------------------
@@ -296,8 +352,8 @@ class Agent:
         for w in ctx.loop.drain_warnings() + ctx.mistake.drain_warnings():
             messages.append({"role": "user", "content": w})
 
-    def _cleanup(self, ctx):
-        """任务结束时清理运行环境（长驻进程等）。"""
+    def _cleanup(self, ctx, messages=None):
+        """任务结束时清理运行环境并提取关键点。"""
         if getattr(ctx, "terminal", None) is not None:
             try:
                 ctx.terminal.kill_all()
@@ -305,12 +361,28 @@ class Agent:
                 pass
         if getattr(ctx, "plan", None) is not None:
             ctx.plan.finalize()
-        # 持久化审计日志
         if getattr(ctx, "security", None) is not None:
             try:
                 ctx.security.persist_audit(self.workspace)
             except Exception:
                 pass
+        # 提取关键点（决策/约束/待办）
+        if messages and self._key_memory is not None:
+            try:
+                turn_msgs = []
+                for m in reversed(messages):
+                    turn_msgs.insert(0, m)
+                    if m.get("role") == "user" and not m.get("compacted"):
+                        break
+                self._key_memory.extract(turn_msgs, self.client)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _fresh_plan():
+        """创建新的空 PlanTracker，用于交互模式跨轮次重置计划。"""
+        from core import plan as plan_mod
+        return plan_mod.PlanTracker()
 
     def _chat_with_retry(self, messages):
         """LLM 调用 + 重试（来源：Aider send_message 的指数退避重试）。"""
@@ -396,6 +468,8 @@ def main():
     parser.add_argument("--no-rag", action="store_true", help="Disable RAG search")
     parser.add_argument("--plan-mode", choices=["single", "multi", "auto"], default="auto",
                         help="Planning mode: single=standard agent with plan approval, multi=planning agent with sub-agent delegation, auto=auto-detect")
+    parser.add_argument("--window-size", type=int, default=3,
+                        help="Sliding window size for context compression: number of recent turns to keep intact (default: 3)")
     args = parser.parse_args()
 
     workspace = os.path.abspath(args.workspace)
@@ -423,14 +497,16 @@ def main():
         max_loops=args.max_loops,
         plan_mode=args.plan_mode,
         sandbox_image=args.sandbox_image,
+        window_size=args.window_size,
     )
 
     if args.task:
         agent.run(args.task)
         return
 
-    # 交互模式：反复读用户输入
+    # 交互模式：反复读用户输入，保留对话历史
     print(f"工作目录：{workspace}\n模型：{args.model}\n输入任务，或输入 /quit 退出。")
+    first_turn = True
     while True:
         try:
             task = input("\n你> ").strip()
@@ -441,7 +517,15 @@ def main():
             continue
         if task in ("/quit", "/exit", "quit"):
             break
-        agent.run(task)
+        if task == "/clear":
+            agent._history = None
+            agent.ctx = None
+            agent._key_memory = KeyPointMemory()
+            first_turn = True
+            print("  对话历史已清除。")
+            continue
+        agent.run(task, continue_from_history=not first_turn)
+        first_turn = False
 
 
 if __name__ == "__main__":

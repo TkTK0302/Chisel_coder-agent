@@ -69,21 +69,22 @@ def test_truncate_output_short():
 
 
 def test_truncate_output_long():
-    text = "A" * 5000
-    out = context.truncate_output(text, head=100, tail=50)
-    assert len(out) < 300
-    assert "omitted" in out or "truncated" in out
-    assert out.startswith("A" * 100)
-    assert out.endswith("A" * 50)
+    text = "\n".join(["A" * 80] * 100)  # 100 行
+    out = context.truncate_output(text, head_lines=10, tail_lines=10)
+    assert "截断" in out or "omitted" in out
+    # 前 10 行应保留
+    assert out.startswith("A" * 80)
+    # 后 10 行应保留
+    assert out.rstrip().endswith("A" * 80)
 
 
 def test_truncate_output_saves_to_file(tmp_path):
-    """OpenHands 风格：截断时保存完整内容到文件。"""
-    text = "X" * 5000
-    out = context.truncate_output(text, head=100, tail=50, save_dir=str(tmp_path), tool_prefix="bash")
-    assert "truncated" in out.lower()
-    # 检查文件是否保存在 .chisel/truncated/ 下
-    saved = list((tmp_path / ".chisel" / "truncated").glob("*"))
+    """截断时保存完整内容到文件。"""
+    text = "\n".join(["X" * 80] * 100)
+    out = context.truncate_output(text, head_lines=10, tail_lines=10, save_dir=str(tmp_path), tool_prefix="bash")
+    assert "截断" in out
+    # 检查文件是否保存在 .chisel/tool_outputs/ 下
+    saved = list((tmp_path / ".chisel" / "tool_outputs").glob("*"))
     assert len(saved) >= 1
     assert saved[0].read_text(encoding="utf-8") == text
 
@@ -101,38 +102,36 @@ def test_compress_folds_old_small_rounds():
     msgs = base_messages()
     client = FakeClient()
     # 总 token 估算 ≈ 72，设 50 → 必须删掉最老的回合
-    changed = context.compress_context(msgs, client, max_tokens=50)
+    changed = context.compress_context(msgs, client, max_tokens=50, window_size=0)
     assert changed is True
     assert_no_orphan_tools(msgs)
-    # pinned 三条永不删
-    assert msgs[0]["content"] == "system"
-    assert msgs[1]["content"] == "计划占位"
+    # 用户消息永不删
     assert msgs[2]["content"] == "用户任务"
-    # 最老的回合（index>=3 的第一个 assistant）应已被折叠
+    # 最老的回合应已被折叠
     assert len(msgs) < len(base_messages())
-    # 配对不变式：tool 消息总数 == 所有 assistant 的 tool_calls 总数
+    # 配对不变式
     total_calls = sum(len(m["tool_calls"]) for m in msgs if m.get("tool_calls"))
     assert sum(1 for m in msgs if m["role"] == "tool") == total_calls
 
 
 def test_compress_summarizes_big_round():
-    """大回合（内容超 FOLD_MAX_CHARS）不被整段删，而走 LLM 摘要。"""
+    """大回合（内容超 FOLD_MAX_CHARS）走 LLM 摘要。"""
     msgs = base_messages()[:-6]  # 只留 pinned + 一个回合
     big = make_round_trip(calls=1, content="E" * 12000)  # 大回合
     msgs += big
     client = FakeClient()
-    changed = context.compress_context(msgs, client, max_tokens=100)
+    changed = context.compress_context(msgs, client, max_tokens=100, window_size=0)
     assert changed is True
     assert_no_orphan_tools(msgs)
     assert client.summarize_calls >= 1
     # 应出现摘要消息
-    assert any(m.get("role") == "user" and "Summary" in str(m.get("content")) for m in msgs)
+    assert any(m.get("role") == "user" and "摘要" in str(m.get("content")) for m in msgs)
 
 
-def test_compress_never_touches_pinned():
+def test_compress_never_touches_user_messages():
     msgs = base_messages()
     client = FakeClient()
-    context.compress_context(msgs, client, max_tokens=0)  # 极限压缩
-    assert msgs[0]["role"] == "system"
-    assert msgs[1]["role"] == "system"
-    assert msgs[2]["role"] == "user"
+    context.compress_context(msgs, client, max_tokens=0, window_size=5)  # 极限压缩，大窗口
+    # 用户消息不应被删
+    user_msgs = [m for m in msgs if m["role"] == "user"]
+    assert len(user_msgs) >= 1

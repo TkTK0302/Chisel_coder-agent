@@ -160,8 +160,8 @@ function renderConversations() {
   state.conversations.forEach(c => {
     const div = document.createElement('div');
     div.className = `conv-item ${state.currentConv?.id === c.id ? 'active' : ''}`;
-    div.textContent = c.title;
     div.onclick = () => selectConversation(c.id);
+    div.innerHTML = `<span class="conv-title">${esc(c.title)}</span><button class="conv-del-btn" onclick="event.stopPropagation(); deleteConversation('${c.id}')">✕</button>`;
     el.appendChild(div);
   });
 }
@@ -175,10 +175,33 @@ async function selectConversation(id) {
   renderConversations();
 }
 
+async function deleteConversation(convId) {
+  if (!confirm('Delete this chat and all its messages?')) return;
+  try {
+    await api('delete_conversation', convId);
+    if (state.currentConv && state.currentConv.id === convId) {
+      state.currentConv = null;
+      state.messages = [];
+      document.getElementById('chatMessages').innerHTML = '';
+      document.getElementById('chatTitle').textContent = 'Chat';
+    }
+    await loadConversations();
+    if (state.conversations.length === 0) {
+      await newConversation();
+    } else if (!state.currentConv) {
+      selectConversation(state.conversations[0].id);
+    }
+    toast('Chat deleted');
+  } catch (e) { toast('Failed to delete chat', 'error'); }
+}
+
 async function newConversation() {
   if (!state.currentProject) return;
   try {
-    const c = await api('create_conversation', state.currentProject.id, 'New Chat');
+    // 默认名为 "Chat N"，N = 当前 project 下已有 chat 数 + 1
+    const existing = await api('list_conversations', state.currentProject.id);
+    const title = 'Chat ' + (existing.length + 1);
+    const c = await api('create_conversation', state.currentProject.id, title);
     await loadConversations();
     selectConversation(c.id);
   } catch (e) { toast('Failed to create conversation'); }
@@ -337,7 +360,7 @@ async function deleteFile(fileId, filename) {
 
 // ===== Utils =====
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-function toast(msg) { const el = document.getElementById('toast'); el.textContent = msg; el.classList.remove('hidden'); setTimeout(() => el.classList.add('hidden'), 2500); }
+function toast(msg, type) { const el = document.getElementById('toast'); el.textContent = msg; el.className = 'toast' + (type ? ' ' + type : ''); el.classList.remove('hidden'); setTimeout(() => el.classList.add('hidden'), 2500); }
 
 // ===== Modal =====
 let modalCallback = null;
@@ -373,38 +396,51 @@ async function refreshFileExplorer() {
   try {
     const items = await api('list_workspace', state.currentProject.id);
     const tree = document.getElementById('fileTree');
-    // Build tree from flat list
+    // Build tree from flat list — items are in depth-first order from os.walk
     let html = '';
-    let lastDir = '';
     items.forEach(item => {
       const depth = item.path.split('/').length - 1;
-      const indent = '  '.repeat(depth);
       if (item.type === 'dir') {
-        html += `<div class="item dir" style="padding-left:${12 + depth*16}px" onclick="toggleDir(this)">${indent}📁 ${item.path.split('/').pop()}</div>`;
+        html += `<div class="item dir collapsed" style="padding-left:${12 + depth*16}px" onclick="toggleDir(this)" data-depth="${depth}">${item.path.split('/').pop()}</div>`;
       } else {
-        const size = item.size > 1024 ? (item.size/1024).toFixed(1)+'KB' : item.size+'B';
-        html += `<div class="item file" style="padding-left:${12 + depth*16}px" onclick="openFile('${item.path}')">${indent}📄 ${item.path.split('/').pop()} <span class="size">${size}</span></div>`;
+        html += `<div class="item file tree-hidden" style="padding-left:${12 + depth*16}px" onclick="openFile('${item.path}')" data-depth="${depth}">📄 ${item.path.split('/').pop()} <span class="size">${item.size > 1024 ? (item.size/1024).toFixed(1)+'KB' : item.size+'B'}</span></div>`;
       }
     });
     tree.innerHTML = html || '<div class="item" style="color:var(--text2);padding:12px">Empty workspace</div>';
     toast('Workspace refreshed');
-  } catch(e) { toast('Failed to load workspace'); }
+  } catch(e) { toast('Failed to load workspace', 'error'); }
 }
 
 function toggleDir(el) {
-  const items = document.getElementById('fileTree').children;
+  const tree = document.getElementById('fileTree');
+  const items = tree.children;
   const idx = Array.from(items).indexOf(el);
-  const pl = el.style.paddingLeft ? parseInt(el.style.paddingLeft) : 12;
-  const depth = Math.round((pl - 12) / 16);
-  let i = idx + 1;
-  while (i < items.length) {
-    const childPl = items[i].style.paddingLeft ? parseInt(items[i].style.paddingLeft) : 12;
-    const childDepth = Math.round((childPl - 12) / 16);
-    if (childDepth <= depth) break;
-    items[i].style.display = items[i].style.display === 'none' ? '' : 'none';
-    i++;
+  const dirDepth = parseInt(el.dataset.depth) || 0;
+  const isCollapsed = el.classList.contains('collapsed');
+
+  if (isCollapsed) {
+    // 展开：显示直接子节点（depth + 1）
+    el.classList.remove('collapsed');
+    for (let i = idx + 1; i < items.length; i++) {
+      const childDepth = parseInt(items[i].dataset.depth) || 0;
+      if (childDepth <= dirDepth) break;           // 回到同级或上级，停止
+      if (childDepth === dirDepth + 1) {
+        items[i].classList.remove('tree-hidden');   // 直接子节点显示
+      }
+    }
+  } else {
+    // 折叠：隐藏所有后代节点
+    el.classList.add('collapsed');
+    for (let i = idx + 1; i < items.length; i++) {
+      const childDepth = parseInt(items[i].dataset.depth) || 0;
+      if (childDepth <= dirDepth) break;
+      items[i].classList.add('tree-hidden');
+      // 子文件夹也标记为 collapsed
+      if (items[i].classList.contains('dir')) {
+        items[i].classList.add('collapsed');
+      }
+    }
   }
-  el.textContent = el.textContent.startsWith('📁') ? '📂' + el.textContent.slice(1) : '📁' + el.textContent.slice(1);
 }
 
 async function openFile(path) {
@@ -645,7 +681,10 @@ sendMessage = async function() {
     }
     const msgs = await api('list_messages', state.currentConv.id);
     const userMsgs = msgs.filter(m => m.role === 'user');
-    if (userMsgs.length === 1 && state.currentConv && state.currentConv.title === 'New Chat') {
+    const isDefaultName = state.currentConv && (
+      state.currentConv.title === 'New Chat' || /^Chat \d+$/.test(state.currentConv.title)
+    );
+    if (userMsgs.length === 1 && isDefaultName) {
       await autoRenameChat(state.currentConv.id, text);
     }
     updateStatusBar();

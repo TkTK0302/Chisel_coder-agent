@@ -38,6 +38,9 @@ RISK_PATTERNS: list[tuple[re.Pattern, SecurityRisk, str, str]] = [
     (re.compile(r"\bwget\b.*\|\s*(bash|sh|zsh)\b", re.IGNORECASE), SecurityRisk.HIGH, "Download and execute remote script", "remote code execution"),
     (re.compile(r"\bwget\b.*\|\s*(bash|sh|zsh)\b", re.IGNORECASE), SecurityRisk.HIGH, "Download and execute remote script", "remote code execution"),
     (re.compile(r"\b(shutdown|reboot|poweroff)\b", re.IGNORECASE), SecurityRisk.HIGH, "Shut down or restart the system", "service interruption"),
+    # MEDIUM —— 条件命令的写操作变体
+    (re.compile(r"\bsed\s+.*(?<!\w)-i\b", re.IGNORECASE), SecurityRisk.MEDIUM, "sed -i modifies file in-place", "file modification"),
+    (re.compile(r"\bcurl\b.*(?<!\w)-[oO]\b", re.IGNORECASE), SecurityRisk.MEDIUM, "curl writing to file", "file download"),
     # MEDIUM
     (re.compile(r"\brm\s+-rf?\s+.*__pycache__", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete __pycache__ directories", "cache cleanup"),
     (re.compile(r"\brm\s+-rf?\s+.*\.pytest_cache", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete .pytest_cache directories", "cache cleanup"),
@@ -68,72 +71,182 @@ _PROTECTED_PATTERNS = [
 ]
 
 
-# 只读命令白名单 —— 这些命令不修改文件，永远不需要 LLM 分析
-_READONLY_CMDS = {
+# 绝对安全命令 —— 这些命令在任何情况下都不能修改文件
+# 即使引用受保护路径（如 cat .env），也直接放行
+_ABSOLUTE_SAFE_CMDS = {
+    # 文本查看
     "cat", "head", "tail", "less", "more", "zcat", "bzcat", "xzcat",
-    "grep", "egrep", "fgrep", "rg", "ag",  # 搜索类
-    "sed", "awk", "cut", "tr", "sort", "uniq", "wc", "nl", "od", "hexdump", "xxd",  # 文本处理
-    "ls", "dir", "stat", "file", "du", "df", "tree",  # 文件信息
-    "find", "locate", "which", "whereis", "type",  # 查找（不带 -delete/-exec 的 find 是只读的）
-    "echo", "printf", "date", "env", "printenv", "pwd", "whoami", "hostname", "uname",  # 信息类
-    "diff", "cmp", "comm", "md5sum", "sha1sum", "sha256sum", "basename", "dirname", "realpath",  # 比较/路径
-    "ps", "top", "htop", "free", "vmstat", "iostat", "netstat", "ss", "lsof",  # 系统监控
-    "pgrep", "pidof",  # 进程查找
-    "docker ps", "docker images", "docker logs", "docker inspect", "docker stats",  # Docker 只读
-    "git log", "git show", "git diff", "git status", "git branch", "git tag", "git blame",  # Git 只读
-    "git config", "git remote", "git ls-files", "git rev-parse", "git rev-list", "git stash list",
-    "python", "python3",  # python 脚本执行（在沙盒里，不直接修改宿主文件）
-    "pip list", "pip show", "pip freeze",  # pip 只读
-    "npm list", "npm view", "npm outdated",  # npm 只读
+    # 搜索
+    "grep", "egrep", "fgrep", "rg", "ag",
+    # 文件/目录信息
+    "ls", "dir", "pwd", "stat", "file", "du", "df", "tree",
+    "readlink", "realpath", "basename", "dirname",
+    # 查找（不带 -delete/-exec 的 find 在下层条件判断中处理）
+    "locate", "which", "whereis", "type",
+    # 信息输出
+    "echo", "printf", "date", "env", "printenv",
+    "whoami", "hostname", "uname", "id", "groups", "logname",
+    "uptime", "tty", "arch", "nproc",
+    # 目录导航（只改 shell 状态）
+    "cd", "pushd", "popd", "dirs",
+    # 文本处理
+    "wc", "sort", "uniq", "nl", "od", "hexdump", "xxd",
+    "column", "paste", "join", "strings", "jq", "yq",
+    "expand", "unexpand", "fmt", "fold", "iconv",
+    # 比较/校验
+    "diff", "cmp", "comm",
+    "md5sum", "sha1sum", "sha256sum", "sha512sum", "cksum", "sum",
+    # 计算器
+    "bc", "dc", "expr",
+    # 系统监控
+    "ps", "top", "htop", "free", "vmstat", "iostat", "netstat", "ss", "lsof",
+    "pgrep", "pidof", "pmap",
+    # 网络诊断
+    "ping", "ping6", "traceroute", "tracepath", "nslookup", "dig", "host",
+    # Shell 内置
+    "sleep", "true", "false", "test", "[", "man", "help", "clear", "history",
+    "declare", "typeset", "compgen", "timeout",
+    # Git 只读子命令
+    "git log", "git show", "git diff", "git status", "git branch", "git tag",
+    "git blame", "git config", "git remote", "git ls-files", "git rev-parse",
+    "git rev-list", "git stash list", "git describe", "git shortlog", "git reflog",
+    # Docker 只读
+    "docker ps", "docker images", "docker logs", "docker inspect", "docker stats",
+    "docker version", "docker info", "docker network ls", "docker volume ls",
+    # 包管理器只读
+    "pip list", "pip show", "pip freeze", "pip config",
+    "npm list", "npm view", "npm outdated", "npm config",
+}
+
+# 条件命令 —— 同一命令名有读写两种形态，需检查参数
+# 格式: {命令名: [写操作标志列表]}
+_CONDITIONAL_CMDS = {
+    "sed": ["-i"],                       # sed -i 是写操作
+    "awk": ["-i"],                       # awk -i inplace 是写操作
+    "find": ["-delete", "-exec", "-execdir"],  # find 带这些标志是写操作
+    "curl": ["-o", "-O"],                # curl -o/-O 写入文件
+    "wget": ["-O"],                      # wget -O 写入文件
 }
 
 
-def _is_readonly_command(command: str) -> bool:
-    """检查命令是否为纯只读操作（不修改任何文件）。
+def _split_by_shell_separators(cmd: str) -> list[str]:
+    """按 ; 和 & 拆分命令链，但尊重引号内的字符。
 
-    判断标准：
-    1. 基础命令在只读白名单中
-    2. 没有输出重定向（> / >>）写入文件
-    3. 没有管道到破坏性命令
-    4. sed 不带 -i（in-place edit）标志
-    5. find 不带 -delete 或 -exec
+    python -c "import requests; print(1+1)" 中的 ; 不会被拆分，
+    但 2>&1; echo done 中的 ; 会被正确拆分。
+    """
+    segments = []
+    current = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            current.append(ch)
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+            current.append(ch)
+        elif ch == '\\' and (in_single or in_double):
+            # 引号内的转义字符，保留
+            current.append(ch)
+            i += 1
+            if i < len(cmd):
+                current.append(cmd[i])
+        elif ch == ';' and not in_single and not in_double:
+            if current:
+                segments.append(''.join(current).strip())
+                current = []
+        elif ch == '&' and not in_single and not in_double:
+            # 检查是否是 && （两个连续的 &）
+            if i + 1 < len(cmd) and cmd[i + 1] == '&':
+                if current:
+                    segments.append(''.join(current).strip())
+                    current = []
+                i += 1  # 跳过第二个 &
+            else:
+                # 单个 & 是后台运行，不算分隔符
+                current.append(ch)
+        else:
+            current.append(ch)
+        i += 1
+    if current:
+        segments.append(''.join(current).strip())
+    return [s for s in segments if s]
+
+
+def _is_absolutely_safe(command: str) -> bool:
+    """检查命令是否绝对安全——在任何情况下都不能修改文件。
+
+    这些命令即使引用受保护路径（如 cat .env）也直接放行，
+    因为它们只是读取/显示，不会删除或修改。
     """
     cmd = command.strip()
 
-    # 有输出重定向 → 可能写入文件，不是纯只读
-    if re.search(r"[^>]\s*>[^>]", cmd) or re.search(r">>\s*\S", cmd):
+    # 有输出重定向到文件 → 不是绝对安全（2>/dev/null 是 stderr，无害）
+    if re.search(r"[^2]>\s*\S", cmd) or re.search(r">>\s*\S", cmd) or re.search(r"^>\s*\S", cmd):
         return False
 
-    # 检查管道目标：如果管道到非只读命令，则不是纯只读
-    if "|" in cmd:
-        pipes = [p.strip() for p in cmd.split("|")]
-        for pipe in pipes[1:]:  # 跳过第一个（管道源）
-            first_word = pipe.split()[0] if pipe.split() else ""
-            if first_word and first_word not in _READONLY_CMDS:
-                # 管道目标可能是破坏性命令，递归检查
-                if not _is_readonly_command(pipe):
-                    return False
+    # 命令链 → 逐段检查
+    if ";" in cmd or "&&" in cmd:
+        segments = _split_by_shell_separators(cmd)
+        if len(segments) > 1:
+            return all(_is_absolutely_safe(s) for s in segments)
 
-    # 提取基础命令名（第一个词，去除路径前缀）
+    # 管道 → 逐段检查
+    if "|" in cmd:
+        return all(_is_absolutely_safe(p.strip()) for p in cmd.split("|"))
+
+    # 提取基础命令名
     first_word = cmd.split()[0] if cmd.split() else ""
     base_cmd = first_word.split("/")[-1] if "/" in first_word else first_word
 
     # 精确匹配
-    if cmd in _READONLY_CMDS or base_cmd in _READONLY_CMDS:
-        # sed -i 是写操作，不是只读
-        if base_cmd == "sed" and re.search(r"(?<!\w)-i\b", cmd):
-            return False
-        # find -delete / -exec 是写操作
-        if base_cmd == "find" and re.search(r"-(delete|exec|execdir)\b", cmd):
-            return False
+    if base_cmd in _ABSOLUTE_SAFE_CMDS:
         return True
 
     # 前缀匹配（如 "git log", "docker ps"）
-    for ro_cmd in _READONLY_CMDS:
-        if " " in ro_cmd and cmd.startswith(ro_cmd):
+    for safe_cmd in _ABSOLUTE_SAFE_CMDS:
+        if " " in safe_cmd and cmd.startswith(safe_cmd):
             return True
 
     return False
+
+
+def _is_readonly_command(command: str) -> bool:
+    """检查命令是否只读（包括条件命令——同一命令名有读写两种形态）。
+
+    先检查绝对安全命令，再检查条件命令的参数。
+    例如：sed 不带 -i 是只读，find 不带 -delete 是只读。
+    """
+    # 绝对安全命令直接通过
+    if _is_absolutely_safe(command):
+        return True
+
+    # 处理命令链和管道
+    cmd = command.strip()
+    if ";" in cmd or "&&" in cmd:
+        segments = _split_by_shell_separators(cmd)
+        if len(segments) > 1:
+            return all(_is_readonly_command(s) for s in segments)
+    if "|" in cmd:
+        return all(_is_readonly_command(p.strip()) for p in cmd.split("|"))
+
+    # 提取基础命令名
+    first_word = cmd.split()[0] if cmd.split() else ""
+    base_cmd = first_word.split("/")[-1] if "/" in first_word else first_word
+
+    if base_cmd not in _CONDITIONAL_CMDS:
+        return False
+
+    # 检查是否包含写操作标志
+    write_flags = _CONDITIONAL_CMDS[base_cmd]
+    for flag in write_flags:
+        if re.search(rf"(?<!\w){re.escape(flag)}\b", cmd):
+            return False  # 包含写操作标志
+
+    return True  # 条件命令但没有写操作标志 → 只读
 
 
 class SecurityAnalyzer:
@@ -149,13 +262,33 @@ class SecurityAnalyzer:
         return hashlib.sha256(command.encode("utf-8")).hexdigest()[:16]
 
     def assess(self, command: str) -> tuple[SecurityRisk, str, str]:
-        """评估命令风险。返回 (risk_level, reason, consequence)。"""
-        # 1) 检查受保护路径
+        """评估命令风险。返回 (risk_level, reason, consequence)。
+
+        检查顺序（确定性优先，LLM 兜底）：
+        1. 绝对安全白名单 → 不能修改文件的命令，直接 LOW
+        2. 条件命令检查 → sed/find/curl/wget 等，根据参数判断读写
+        3. 受保护路径 → 对能修改文件的命令，检查是否目标受保护资源
+        4. Shell AST 语义分析 → 管道组合风险、破坏性命令
+        5. 正则模式匹配 → 已知危险模式
+        6. LLM 辅助分析 → 前面都无法判定时，才调 LLM
+        """
+        # 1) 绝对安全：这些命令不能修改文件，直接放行
+        #    cat .env 在这里被放行，不会走到受保护路径检查
+        if _is_absolutely_safe(command):
+            return SecurityRisk.LOW, "", ""
+
+        # 2) 条件命令检查 —— find -print 在这里放行，sed -n 在这里放行
+        if _is_readonly_command(command):
+            return SecurityRisk.LOW, "", ""
+
+        # 3) 受保护路径 —— 仅对能修改文件且非只读的命令检查
+        #     rm -rf .env 走到这里 → CRITICAL
+        #     必须在 Shell AST 和正则之前，否则 rm -rf . 会先匹配
         for pat, reason, consequence in _PROTECTED_PATTERNS:
             if re.search(pat, command, re.IGNORECASE):
                 return SecurityRisk.CRITICAL, f"Targets protected resource: {reason}", consequence
 
-        # 2) Shell 语义分析（AST）
+        # 4) Shell 语义分析（AST）—— 检测管道组合、破坏性命令
         try:
             risk, reason = analyze_command(command)
             if risk == "CRITICAL":
@@ -167,16 +300,12 @@ class SecurityAnalyzer:
         except Exception:
             pass
 
-        # 3) 正则匹配
+        # 5) 正则模式匹配 —— 已知危险模式
         for pattern, risk, reason, consequence in RISK_PATTERNS:
             if pattern.search(command):
                 return risk, reason, consequence
 
-        # 4) 只读命令白名单 —— 纯只读操作不需要 LLM 分析，直接放行
-        if _is_readonly_command(command):
-            return SecurityRisk.LOW, "", ""
-
-        # 5) LLM 辅助分析（可选，仅对无法判定的非只读命令）
+        # 6) LLM 辅助分析 —— 仅对前面都无法判定的命令
         if self.client and len(command) > 20:
             try:
                 llm_risk, llm_reason = self._llm_assess(command)
@@ -208,7 +337,7 @@ class SecurityAnalyzer:
     def dry_run(self, command: str) -> list[dict]:
         """执行 Dry-Run 预览，返回拟删除/修改的文件列表。"""
         items = []
-        workspace = os.getcwd()
+        workspace = self.workspace or os.getcwd()
         # 尝试解析命令中的路径模式
         for pat, reason, consequence in _PROTECTED_PATTERNS:
             m = re.search(pat, command, re.IGNORECASE)
@@ -289,7 +418,7 @@ class SecurityAnalyzer:
         print(f"     (Non-interactive mode, auto-rejected)", flush=True)
 
     def _confirm_critical(self, command, risk, reason, consequence):
-        """CRITICAL 风险：Dry-Run 预览 + 强确认。"""
+        """CRITICAL 风险：分阶段展示（扫描→判定→确认）+ Shadow Backup。"""
         # 桌面模式：IPC 按钮
         if os.environ.get("CHISEL_DESKTOP") and self.workspace:
             from core.user_input import ask_question
@@ -307,6 +436,9 @@ class SecurityAnalyzer:
             if protected:
                 ans = ask_question(self.workspace, msg + "\n\n⚠️ 涉及受保护资源，请确认", ["确认执行", "取消"])
                 if ans == "确认执行":
+                    backup_path = self._shadow_backup(command)
+                    if backup_path:
+                        print(f"\n  [Shadow Backup] 删除前已备份到 {backup_path}", flush=True)
                     self._audit("allow", command, f"risk={risk.value}, ipc_confirm")
                     return True
                 self._audit("reject", command, f"risk={risk.value}, ipc_reject")
@@ -318,41 +450,99 @@ class SecurityAnalyzer:
             self._audit("reject", command, f"risk={risk.value}, ipc_reject")
             return False
 
-        # CLI 模式
-        print(f"\n  {'='*50}", flush=True)
-        print(f"  💀  CRITICAL Risk Operation", flush=True)
-        print(f"  {'='*50}", flush=True)
-        print(f"  Command: {command}")
-        print(f"  Reason: {reason}")
-        print(f"  Consequence: {consequence}")
-        print()
+        # ---- CLI 模式：分阶段展示 ----
+
+        # Phase 1: 扫描待删除目标
+        print(f"\n  {'─'*50}", flush=True)
+        print(f"  [Phase 1] 扫描待删除目标...", flush=True)
+        targets = self._resolve_targets(command)
+        if targets:
+            for t in targets:
+                full = Path(self.workspace) / t
+                if not full.exists():
+                    continue
+                if full.is_dir():
+                    fcount = sum(1 for _ in full.rglob("*") if _.is_file())
+                    size = sum(_.stat().st_size for _ in full.rglob("*") if _.is_file())
+                    print(f"    📁 {t}/  ({fcount} files, {size:,} bytes)", flush=True)
+                else:
+                    size = full.stat().st_size if full.exists() else 0
+                    print(f"    📄 {t}  ({size:,} bytes)", flush=True)
+        else:
+            print(f"    (无法解析命令中的文件路径)", flush=True)
+
+        # Phase 2: 安全策略判定
+        print(f"\n  [Phase 2] 安全策略判定...", flush=True)
         preview = self.dry_run(command)
         if preview:
             crit = [i for i in preview if i.get("risk") == "CRITICAL"]
             high = [i for i in preview if i.get("risk") == "HIGH"]
             medium = [i for i in preview if i.get("risk") == "MEDIUM"]
-            print(f"  Dry-Run Preview ({len(preview)} items affected):")
             for i in crit[:5]:
-                print(f"    💀 [CRITICAL] {i['path']}")
+                print(f"    💀 [CRITICAL] {i['path']}  — {i.get('reason', '受保护资源')}", flush=True)
             for i in high[:5]:
-                print(f"    🔴 [HIGH]     {i['path']}")
+                print(f"    🔴 [HIGH]     {i['path']}  — {i.get('reason', '')}", flush=True)
             for i in medium[:5]:
-                print(f"    ⚠️  [MEDIUM]   {i['path']}")
-            print()
+                print(f"    ⚠️  [MEDIUM]   {i['path']}  — {i.get('reason', '')}", flush=True)
+
         protected = []
         for pat, reason_p, _ in _PROTECTED_PATTERNS:
             if re.search(pat, command, re.IGNORECASE):
-                protected.append(pat)
+                protected.append((pat, reason_p))
         if protected:
-            print(f"  ⚠️  This operation targets protected resources: {', '.join(protected)}")
-            phrase = f"CONFIRM DELETE {Path(command.split()[-1]).name if command.split() else 'FILES'}"
-            ans = input(f"  Type confirmation phrase to proceed:\n  > ").strip()
+            print(f"\n  ⚠️  检测到受保护路径：", flush=True)
+            for pat, reason_p in protected:
+                print(f"      • {reason_p}", flush=True)
+            print(f"  ⚠️  删除受保护资源将导致不可逆的数据丢失！", flush=True)
+
+        # Phase 3: 人机确认
+        print(f"\n  [Phase 3] 人机确认", flush=True)
+        print(f"  {'─'*50}", flush=True)
+        if protected:
+            # 生成确认短语（取命令中最后一个路径参数的文件名）
+            last_arg = ""
+            parts = command.split()
+            for p in reversed(parts):
+                if not p.startswith("-") and p not in ("rm", "rmdir", "del", "rd"):
+                    last_arg = Path(p).name
+                    break
+            phrase = f"CONFIRM DELETE {last_arg}" if last_arg else "CONFIRM DELETE FILES"
+            print(f"  请输入安全确认短语以继续：", flush=True)
+            print(f"  > {phrase}", flush=True)
+            try:
+                ans = input(f"  > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                self._audit("reject", command, "input_interrupted")
+                return False
             if ans == phrase:
+                # 确认通过 → 创建 Shadow Backup
+                backup_path = self._shadow_backup(command)
+                if backup_path:
+                    print(f"\n  📦 [Shadow Backup] 删除前已创建快照：", flush=True)
+                    print(f"     {backup_path}", flush=True)
+                    # 显示备份内容
+                    try:
+                        import zipfile
+                        with zipfile.ZipFile(backup_path, 'r') as zf:
+                            names = zf.namelist()
+                            total_size = sum(zf.getinfo(n).file_size for n in names)
+                            print(f"     包含 {len(names)} 个文件，共 {total_size:,} bytes", flush=True)
+                            for n in names[:8]:
+                                print(f"       • {n}", flush=True)
+                            if len(names) > 8:
+                                print(f"       ... 及其他 {len(names) - 8} 个文件", flush=True)
+                    except Exception:
+                        pass
                 self._audit("allow", command, f"risk={risk.value}, phrase_confirmed")
                 return True
+            print(f"\n  ⛔ 确认短语不匹配，操作已取消。", flush=True)
             self._audit("reject", command, f"risk={risk.value}, phrase_mismatch")
             return False
-        ans = input(f"  Confirm? (y/N) ").strip().lower()
+        try:
+            ans = input(f"  确认执行？(y/N) ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            self._audit("reject", command, "input_interrupted")
+            return False
         if ans in ("y", "yes"):
             self._audit("allow", command, f"risk={risk.value}")
             return True
@@ -447,6 +637,75 @@ class SecurityAnalyzer:
             "command": command[:200],
             "reason": reason,
         })
+
+    def _resolve_targets(self, command: str) -> list[str]:
+        """从删除命令中解析目标文件/目录路径列表。"""
+        targets = []
+        parts = command.split()
+        skip_next = False
+        for i, p in enumerate(parts):
+            if skip_next:
+                skip_next = False
+                continue
+            if p.startswith("-"):
+                if p in ("-rf", "-r", "-f") or p.startswith("-rf") or p.startswith("-r "):
+                    continue
+                # 跳过带参数的长选项
+                if p in ("--recursive", "--force"):
+                    continue
+                skip_next = True
+                continue
+            if p in ("rm", "rmdir", "del", "rd", "Remove-Item", "find"):
+                continue
+            if p.startswith('"') or p.startswith("'"):
+                continue
+            targets.append(p)
+        return targets
+
+    def _shadow_backup(self, command: str) -> str | None:
+        """删除前创建 zip 快照到 .chisel/trash/。
+
+        扫描命令中引用的文件/目录，在删除执行前打包备份。
+        返回备份文件路径，失败返回 None。
+        """
+        import zipfile
+
+        targets = self._resolve_targets(command)
+        if not targets:
+            return None
+
+        trash_dir = Path(self.workspace) / ".chisel" / "trash"
+        trash_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_path = trash_dir / f"backup_{timestamp}.zip"
+
+        files_added = 0
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for target in targets:
+                    full = Path(self.workspace) / target
+                    if not full.exists():
+                        continue
+                    if full.is_dir():
+                        for f in full.rglob("*"):
+                            if f.is_file():
+                                arcname = str(f.relative_to(self.workspace))
+                                zf.write(f, arcname)
+                                files_added += 1
+                    elif full.is_file():
+                        zf.write(full, target)
+                        files_added += 1
+            if files_added == 0:
+                zip_path.unlink(missing_ok=True)
+                return None
+            return str(zip_path)
+        except Exception as e:
+            # 备份失败不阻断删除流程
+            if zip_path.exists():
+                zip_path.unlink(missing_ok=True)
+            print(f"  ⚠️ Shadow backup failed: {e}", flush=True)
+            return None
 
     def persist_audit(self, workspace: str) -> None:
         if not self._audit_log:

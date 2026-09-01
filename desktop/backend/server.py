@@ -38,7 +38,7 @@ def create_project(body: CreateProject):
     ws = str(PROJECTS_DIR / body.name.replace(" ", "_"))
     Path(ws).mkdir(parents=True, exist_ok=True)
     project = db.create_project(body.name, ws)
-    db.create_conversation(project["id"], "New Chat")
+    db.create_conversation(project["id"], "Chat 1")
     return project
 
 @app.delete("/api/projects/{project_id}")

@@ -82,8 +82,12 @@ def run_planner(task: str, ctx: ExecutionContext) -> str:
         {"role": "user", "content": f"Analyze this task and create a plan with delegated subtasks:\n\n{task}"},
     ]
 
+    phase = "explore"  # explore → plan → delegate
+    explored_files = []
+    task_count = 0
+
     for step in range(1, 25):
-        # 第 8 步警告，第 10 步强制截断（不再给模型无限探索的机会）
+        # 第 8 步警告，第 10 步强制截断
         if step == 8 and not ctx.plan.tasks:
             messages.append({
                 "role": "user",
@@ -95,18 +99,15 @@ def run_planner(task: str, ctx: ExecutionContext) -> str:
             })
 
         if step >= 10 and not ctx.plan.tasks:
-            print("  [Planner] ⚠️ Max exploration steps without a plan. Terminating.", flush=True)
+            print("  ⚠️ 规划超时，任务更适合单 Agent 模式。", flush=True)
             return (
                 "Planner terminated: exceeded 10 exploration steps without creating a plan. "
-                "This usually means the task is better suited for single-agent mode. "
-                "Tip: for single-file analysis, use --plan-mode single to skip the planner."
+                "This usually means the task is better suited for single-agent mode."
             )
 
-        print(f"  [Planner] Step {step}...", flush=True)
         try:
             resp = ctx.client.chat(messages, planner_tools)
         except Exception as e:
-            print(f"  [Planner] LLM error: {e}", flush=True)
             time.sleep(1)
             continue
 
@@ -137,20 +138,70 @@ def run_planner(task: str, ctx: ExecutionContext) -> str:
                     else:
                         result = "Blocked: only read-only commands allowed in planner."
                 elif name == "delegate":
-                    print(f"  [Planner] Delegating task: {args.get('task', '')[:100]}...", flush=True)
+                    task_desc = args.get('task', '')[:80]
+                    print(f"  🔧 执行: {task_desc}...", flush=True)
                     result = execute_tool(name, args, ctx.workspace, ctx)
-                    # 改进：子任务验证 —— delegate 后自动检查语法
-                    if "Task completed" in result or "Sub-agent result" in result:
-                        verify_result = _verify_delegated_task(result, ctx)
-                        if verify_result:
-                            result += f"\n{verify_result}"
-                    print(f"  [Planner] Sub-agent result: {result[:200]}...", flush=True)
+                    task_count += 1
+                    # 提取子 Agent 结果中的关键信息
+                    summary = _summarize_delegate_result(result)
+                    print(f"     {summary}", flush=True)
+                elif name == "plan":
+                    result = execute_tool(name, args, ctx.workspace, ctx)
+                    action = args.get("action", "")
+                    if action == "create" and "Plan created" in result:
+                        phase = "delegate"
+                        n_tasks = len(ctx.plan.tasks)
+                        print(f"  📋 规划完成: {n_tasks} 个子任务", flush=True)
+                        for t in ctx.plan.tasks:
+                            print(f"     • {t.description}", flush=True)
+                    elif action == "update":
+                        # 静默更新，不打印
+                        pass
+                elif name == "code_navigate":
+                    result = execute_tool(name, args, ctx.workspace, ctx)
+                    if phase == "explore":
+                        path = args.get("path", "")
+                        if path and path not in explored_files:
+                            explored_files.append(path)
+                            print(f"  🔍 分析: {path}", flush=True)
+                elif name == "read_file":
+                    result = execute_tool(name, args, ctx.workspace, ctx)
+                    if phase == "explore":
+                        path = args.get("path", "")
+                        if path and path not in explored_files:
+                            explored_files.append(path)
+                            # 估算文件大小
+                            lines = result.count("\n") if result else 0
+                            print(f"  📖 读取: {path} ({lines} 行)", flush=True)
                 else:
                     result = execute_tool(name, args, ctx.workspace, ctx)
-                print(f"    [{step}] {name}: {str(result)[:200]}", flush=True)
+
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)[:3000]})
 
     return "Planner reached max steps."
+
+
+def _summarize_delegate_result(result: str) -> str:
+    """从 delegate 结果中提取一句摘要，避免输出几百行原始日志。"""
+    # 找 attempt_completion 的最终输出
+    if "Task complete" in result or "task is complete" in result.lower():
+        # 提取关键行
+        lines = result.splitlines()
+        summary_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("✓") or stripped.startswith("✅"):
+                summary_lines.append(stripped)
+            elif "Modified:" in stripped or "修改" in stripped or "Changed:" in stripped:
+                summary_lines.append(stripped)
+        if summary_lines:
+            return " | ".join(summary_lines[:3])
+        return "✓ 完成"
+    # 找最后几行有意义的内容
+    lines = [l.strip() for l in result.splitlines() if l.strip() and not l.startswith("[")]
+    if lines:
+        return lines[-1][:120]
+    return "完成"
 
 
 def _verify_delegated_task(result: str, ctx: ExecutionContext) -> str:
