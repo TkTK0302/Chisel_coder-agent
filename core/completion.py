@@ -37,7 +37,35 @@ COMPLETION_SCHEMA = {
                         "- 测试全部通过 ✓\n"
                         "- 文件其他部分未受影响 ✓"
                     ),
-                }
+                },
+                # Q7: 结构化字段 —— 子 Agent 完成任务时填写，Planner 可直接读取
+                "summary": {
+                    "type": "string",
+                    "description": "一句话总结做了什么（子 Agent 填写）",
+                },
+                "files_modified": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "修改过的文件路径列表",
+                },
+                "files_created": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "新建的文件路径列表",
+                },
+                "tests_passed": {
+                    "type": "boolean",
+                    "description": "测试是否全部通过",
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "需要人工关注的警告信息（如'修改了 5 个文件但其中 2 个需要手动 review'）",
+                },
+                "needs_review": {
+                    "type": "boolean",
+                    "description": "是否需要 Planner 或人工进一步检查",
+                },
             },
             "required": ["result"],
         },

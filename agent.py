@@ -240,7 +240,7 @@ class Agent:
 
         mode = self.plan_mode
         if mode == "auto":
-            mode = detector.detect_mode_from_task(task, self.workspace)
+            mode = detector.detect_mode_from_task(task, self.workspace, client=self.client)
             print(f"  [Plan mode: {mode.upper()}] {detector.describe(self.workspace)}", flush=True)
 
         if mode == "multi":
@@ -295,9 +295,25 @@ class Agent:
                     print(f"   ↳ {result[:500]}")
 
                 # 死循环 / 连续错误追踪（元工具不参与计数）
-                if name not in ("plan", "attempt_completion"):
+                from core.loop_guard import _META_TOOLS
+                if name not in _META_TOOLS:
                     ctx.loop.note_call(name, args)
-                ctx.mistake.track(result, name)
+                # Q8: 记录安全点（错误开始前的 Git HEAD）
+                if ctx.mistake._error_started and ctx.mistake.safe_point_sha is None:
+                    if getattr(ctx, "git", None) is not None:
+                        try:
+                            _, sha, _ = ctx.git._git("rev-parse", "HEAD")
+                            if sha:
+                                ctx.mistake.set_safe_point(sha)
+                        except Exception:
+                            pass
+                # Q3: 解析 exit_code 传给 track
+                import re as _re
+                exit_code = None
+                m = _re.search(r"\[exit code (\d+)\]", result)
+                if m:
+                    exit_code = int(m.group(1))
+                ctx.mistake.track(result, name, exit_code=exit_code)
                 # 长结果截断后再回填（行级截断：保留头尾 20 行，完整内容存文件）
                 messages.append({"role": "tool", "tool_call_id": tc.id,
                                  "content": ctx.context.truncate_output(
@@ -324,11 +340,22 @@ class Agent:
                     ctx.mistake.persist(self.workspace)
                 except Exception:
                     pass
-                # 自动回滚最近一次快照
+                # Q8: 回滚到安全点（错误开始时的 Git HEAD），而非仅 1 步
                 if getattr(ctx, "git", None) is not None:
                     try:
-                        rollback = ctx.git.undo(1)
-                        print(f"  ↳ Auto-rollback: {rollback}", flush=True)
+                        safe_sha = ctx.mistake.safe_point_sha
+                        if safe_sha:
+                            # 回滚到安全点：git reset --hard safe_sha
+                            ctx.git._git("reset", "--hard", safe_sha)
+                            # 清理账本中安全点之后的条目
+                            ledger = ctx.git._load_ledger()
+                            if safe_sha in ledger:
+                                idx = ledger.index(safe_sha)
+                                ctx.git._save_ledger(ledger[:idx])
+                            print(f"  ↳ Rollback to safe point: {safe_sha[:8]}", flush=True)
+                        else:
+                            rollback = ctx.git.undo(1)
+                            print(f"  ↳ Auto-rollback: {rollback}", flush=True)
                     except Exception:
                         pass
                 self._cleanup(ctx, messages)
@@ -377,6 +404,17 @@ class Agent:
                 self._key_memory.extract(turn_msgs, self.client)
             except Exception:
                 pass
+        # Q7 改进：任务完成后自动保存检查点
+        if messages and ctx.plan and ctx.plan.tasks:
+            try:
+                from memory import save_checkpoint
+                task_desc = ctx.plan.tasks[0].description if ctx.plan.tasks else "task"
+                final = ctx._completion_result if getattr(ctx, "_completion_result", None) else (
+                    messages[-1].get("content", "") if messages else ""
+                )
+                save_checkpoint(self.workspace, task_desc, str(final)[:2000])
+            except Exception:
+                pass
 
     @staticmethod
     def _fresh_plan():
@@ -385,7 +423,19 @@ class Agent:
         return plan_mod.PlanTracker()
 
     def _chat_with_retry(self, messages):
-        """LLM 调用 + 重试（来源：Aider send_message 的指数退避重试）。"""
+        """LLM 调用 + 重试（来源：Aider send_message 的指数退避重试）。
+
+        Q4 改进：发送前预检查上下文大小，超硬上限时强制压缩再发送。
+        """
+        # 发送前预检查：如果估算 token 超过硬上限的 95%，先强制压缩
+        hard_limit = int(self.max_context_tokens * 0.95)
+        if self.client.estimate_messages_tokens(messages) > hard_limit:
+            from core.context import compress_context
+            compress_context(
+                messages, self.client, self.max_context_tokens,
+                window_size=1, key_memory=self._key_memory,
+            )
+
         delay = 0.5
         last_err = None
         for _ in range(3):

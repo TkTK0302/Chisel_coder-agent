@@ -47,37 +47,78 @@ def test_mistake_tracker_consecutive_errors():
 
 
 def test_mistake_tracker_resets_on_success():
+    """Q6: 成功加权清零 —— 一次成功减半，两次成功归零。"""
     m = MistakeTracker(soft=2, hard=3)
-    m.track("Error: something went wrong", "bash")
-    m.track("Written a.py (42 chars)", "bash")  # success, reset
-    m.track("Error: something went wrong again", "bash")
-    assert m.should_abort() is False
+    m.track("Traceback: something went wrong", "bash", exit_code=1)
+    m.track("Traceback: another error", "bash", exit_code=1)
+    assert m._errors["tool_execution_failed"] == 2
+    m.track("Written a.py (42 chars)", "bash")  # 一次成功 → 减半
+    assert m._errors["tool_execution_failed"] == 1  # 2 // 2 = 1
+    m.track("Written b.py (42 chars)", "bash")  # 两次成功 → 归零
+    assert m._errors["tool_execution_failed"] == 0
+    m.track("Traceback: something went wrong again", "bash", exit_code=1)
+    assert m.should_abort() is False  # 1 次，还没到 hard=3
 
 
 def test_mistake_tracker_ignores_normal_output():
+    """Q3: exit_code=0 的正常输出不被判定为错误。"""
     m = MistakeTracker(soft=1, hard=2)
-    m.track("exit code 0\nhello world", "bash")
+    m.track("exit code 0\nhello world", "bash", exit_code=0)
     assert m.should_abort() is False
+    # exit_code=0 但包含 AssertionError 仍判定为错误
+    m.track("AssertionError: test failed", "bash", exit_code=0)
+    assert m._errors["tool_execution_failed"] == 1
 
 
 def test_mistake_tracker_classification():
-    """Cline 风格：3 种错误类型分别追踪。"""
+    """Q4: 三类错误分开计数，只有 tool_execution_failed 触发 abort。"""
     m = MistakeTracker(soft=3, hard=5)
     m.track("APIConnectionError: timeout", "bash")  # api_error
     m.track("RateLimit: too many requests", "bash")  # api_error
     m.track("Invalid JSON arguments.", "bash")  # invalid_tool_call
-    assert m.should_abort() is False  # 3 total, soft=3 → warning
-    assert len(m.drain_warnings()) == 1
+    # Q4: api_error + invalid_tool_call 不参与 abort 判断
+    assert m.should_abort() is False
+    assert m._errors["tool_execution_failed"] == 0
     m.track("Tool execution error: something broke", "edit_file")  # tool_execution_failed
     m.track("Access denied: path escapes", "edit_file")  # tool_execution_failed
-    assert m.should_abort() is True  # 5 total, hard=5 → abort
+    assert m._errors["tool_execution_failed"] == 2  # 只有 2 次，未到 hard=5
+    assert m.should_abort() is False
 
 
 def test_mistake_tracker_different_types_accumulate():
-    """不同类型错误累计计数。"""
+    """Q4: 不同类型错误分开追踪，api_error 和 invalid_tool_call 不触发 abort。"""
     m = MistakeTracker(soft=3, hard=5)
     m.track("APIConnectionError: network fail", "bash")  # api_error
     m.track("Invalid JSON arguments.", "bash")  # invalid_tool_call
     m.track("Tool execution error: crash", "bash")  # tool_execution_failed
-    assert m.should_abort() is False  # 3 total, soft=3 → warning
-    assert len(m.drain_warnings()) == 1
+    # Q4: 只有 tool_execution_failed=1，未到 soft=3
+    assert m._errors["tool_execution_failed"] == 1
+    assert m.should_abort() is False
+
+
+def test_mistake_tracker_abort_only_on_tool_failure():
+    """Q4: api_error 即使达到 hard 阈值也不触发 abort。"""
+    m = MistakeTracker(soft=3, hard=5)
+    for _ in range(7):
+        m.track("APIConnectionError: timeout", "bash")
+    assert m._errors["api_error"] == 7
+    assert m.should_abort() is False  # api_error 不触发 abort
+    # 但 tool_execution_failed 达到 hard 会触发
+    for _ in range(5):
+        m.track("Tool execution error: crash", "bash")
+    assert m.should_abort() is True
+
+
+def test_mistake_tracker_weighted_reset():
+    """Q6: 成功加权清零验证。"""
+    m = MistakeTracker(soft=3, hard=5)
+    # 连续 4 次错误
+    for _ in range(4):
+        m.track("Tool execution error: x", "bash")
+    assert m._errors["tool_execution_failed"] == 4
+    # 1 次成功 → 减半
+    m.track("Written a.py (42 chars)", "bash")
+    assert m._errors["tool_execution_failed"] == 2
+    # 再 1 次成功 → 归零
+    m.track("Written b.py (42 chars)", "bash")
+    assert m._errors["tool_execution_failed"] == 0

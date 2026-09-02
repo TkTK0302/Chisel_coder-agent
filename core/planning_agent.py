@@ -66,7 +66,7 @@ You have these tools available:
 - rag_search: semantic code search
 - bash: read-only shell commands (ls, cat, find, head, tail, wc). Do NOT use grep for Python files — use code_navigate instead.
 - plan: create and update the plan
-- delegate: execute a task via a sub-agent
+- delegate: execute a task via a sub-agent. If the sub-agent result contains "escalated": true, you MUST re-decompose the original task into smaller subtasks and re-delegate — do NOT ignore the escalation.
 - ask_user: ask the user for clarification
 """
 
@@ -87,7 +87,16 @@ def run_planner(task: str, ctx: ExecutionContext) -> str:
     task_count = 0
 
     for step in range(1, 25):
-        # 第 8 步警告，第 10 步强制截断
+        # 阶梯式警告 + 自动回退（Q5 改进）
+        if step == 5 and not ctx.plan.tasks:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "提示：探索已经 5 步，建议开始创建计划。"
+                    "如果你已经掌握了足够的信息，请调用 plan(action='create', tasks=[...])。"
+                ),
+            })
+
         if step == 8 and not ctx.plan.tasks:
             messages.append({
                 "role": "user",
@@ -99,11 +108,8 @@ def run_planner(task: str, ctx: ExecutionContext) -> str:
             })
 
         if step >= 10 and not ctx.plan.tasks:
-            print("  ⚠️ 规划超时，任务更适合单 Agent 模式。", flush=True)
-            return (
-                "Planner terminated: exceeded 10 exploration steps without creating a plan. "
-                "This usually means the task is better suited for single-agent mode."
-            )
+            print("  ⚠️ 规划超时，自动切换到单 Agent 模式。", flush=True)
+            return None  # 特殊标记：触发 DualController 回退到 single
 
         try:
             resp = ctx.client.chat(messages, planner_tools)
@@ -249,6 +255,17 @@ def _filter_readonly_tools():
 def _is_readonly(cmd: str) -> bool:
     readonly = {"ls", "cat", "grep", "find", "head", "tail", "wc", "echo", "pwd",
                 "which", "file", "sort", "uniq", "cut", "diff", "stat", "du",
-                "type", "printenv", "env"}
+                "type", "printenv", "env", "pytest", "pip", "python", "python3"}
     first = cmd.strip().split("|")[0].strip().split()[0] if cmd.strip() else ""
-    return first in readonly or cmd.startswith("python -c ") or "python --version" in cmd
+    if first in readonly:
+        return True
+    if cmd.startswith("python -c ") or "python --version" in cmd:
+        return True
+    # 只读运行时命令：pytest --collect-only、pip list、pip show、python -m <mod> --help
+    if cmd.startswith("pytest --collect-only") or cmd.startswith("pytest --co"):
+        return True
+    if cmd.startswith("pip list") or cmd.startswith("pip show ") or cmd.startswith("pip freeze"):
+        return True
+    if cmd.startswith("python -m ") and ("--help" in cmd or "--version" in cmd):
+        return True
+    return False

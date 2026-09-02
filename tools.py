@@ -124,6 +124,13 @@ def register_tool(schema: dict, handler) -> None:
     EXTRA_HANDLERS[schema["function"]["name"]] = handler
 
 
+def list_registered_tools() -> list[str]:
+    """返回所有已注册的工具名列表（基础 + 扩展），用于调试和可观测性。"""
+    base_names = [t["function"]["name"] for t in BASE_TOOLS]
+    extra_names = [t["function"]["name"] for t in EXTRA_TOOLS]
+    return base_names + extra_names
+
+
 def all_tools() -> list[dict]:
     """动态聚合：基础工具 + 所有已注册的扩展工具。"""
     return BASE_TOOLS + EXTRA_TOOLS
@@ -170,7 +177,10 @@ def execute_tool(name: str, args: dict, workspace: str, ctx=None) -> str:
     """
     try:
         if name == "bash":
-            return _run_bash(args["command"], workspace, ctx)
+            cmd = args.get("command", "").strip()
+            if not cmd:
+                return "bash: command is empty. Please provide a valid shell command."
+            return _run_bash(cmd, workspace, ctx)
         if name == "read_file":
             return _read_file(args["path"], workspace)
         if name == "write_file":
@@ -231,7 +241,33 @@ def _host_bash(command: str, workspace: str) -> str:
 def _run_bash(command: str, workspace: str, ctx=None) -> str:
     # 安全确认：SecurityAnalyzer 评估风险 → 必要时让用户确认
     if not _confirm_for(ctx)(command):
-        return "User cancelled the command."
+        # Q9: 根据安全等级返回引导性拒绝信息，防止 LLM 换写法绕过
+        risk_level = "HIGH"
+        risk_reason = ""
+        if ctx is not None and getattr(ctx, "security", None) is not None:
+            try:
+                risk, risk_reason, _ = ctx.security.assess(command)
+                risk_level = risk.value
+            except Exception:
+                pass
+        if risk_level == "CRITICAL":
+            return (
+                f"⛔ SECURITY BLOCKED (CRITICAL): {risk_reason}\n\n"
+                "This command was rejected by the security analyzer. "
+                "DO NOT attempt to bypass this by rewriting the command — "
+                "all variants of this operation are blocked for safety. "
+                "Use a fundamentally different approach: "
+                "for file deletion, use edit_file to remove content; "
+                "for cleanup tasks, use read_file + write_file instead of rm. "
+                "If you are unsure about the correct safe approach, use ask_user."
+            )
+        return (
+            f"⛔ SECURITY BLOCKED ({risk_level}): {risk_reason}\n\n"
+            "This command was rejected. Do NOT try the same operation with "
+            "different syntax — find a safe alternative approach. "
+            "For example: use read_file/edit_file/write_file instead of shell commands "
+            "for file operations."
+        )
     # 有上下文时走沙盒（默认 auto：Docker 优先，失败降级宿主）
     if ctx is not None:
         return ctx.ensure_sandbox().run(command, workspace)
@@ -405,7 +441,9 @@ def _edit_failure_hint(path: str, original: str, content: str) -> str:
         f"edit_file failed: original_lines not found in {path}. "
         f"Tried strategies: exact → trimmed → elision → indent-tolerant → fuzzy. "
         f"All failed.{hint}\n"
-        f"Use read_file to see the actual file content, then retry (check indentation, whitespace, punctuation)."
+        f"Use read_file to see the actual file content, then retry (check indentation, whitespace, punctuation).\n"
+        f"For Python files, you can also use code_navigate(action='symbols', path='{path}') "
+        f"to get the exact function/class structure before editing."
     )
 
 

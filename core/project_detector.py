@@ -1,10 +1,11 @@
 """项目规模检测：决定使用 single 模式（单 Agent 两阶段）还是 multi 模式（多 Agent 委托）。
 
 策略（优先级从高到低）：
-  1. 任务感知：分析任务描述，如果只涉及 1-2 个具体文件 → single
-  2. 文件数 ≤ MIN_FILES_FOR_MULTI：强制 single
-  3. 小项目（single）：文件数 < 30 且 总行数 < 3000 且 符号数 < 50
-  4. 大项目（multi）：文件数 ≥ 30 或 总行数 ≥ 3000 或 符号数 ≥ 50
+  1. LLM 判断（Q9 改进）：用 LLM 分析任务复杂度，替代正则提取
+  2. 任务感知（fallback）：分析任务描述，如果只涉及 1-2 个具体文件 → single
+  3. 文件数 ≤ MIN_FILES_FOR_MULTI：强制 single
+  4. 小项目（single）：文件数 < 30 且 总行数 < 3000 且 符号数 < 50
+  5. 大项目（multi）：文件数 ≥ 30 或 总行数 ≥ 3000 或 符号数 ≥ 50
 
 检测指标：
   - 文件数（仅统计 .py / .js / .ts / .go / .rs / .java / .c / .cpp）
@@ -14,8 +15,11 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import os
 import re
+import time
 from pathlib import Path
 
 _SKIP_DIRS = {".git", ".chisel", "__pycache__", "node_modules", ".venv", ".pytest_cache",
@@ -28,15 +32,34 @@ MAX_FILES = 30
 MAX_LINES = 3000
 MAX_SYMBOLS = 50
 
+# Q9: LLM 判断缓存 —— 同 workspace + 相似 task 复用结果
+_llm_cache: dict[str, tuple[str, float]] = {}
 
-def detect_mode_from_task(task: str, workspace: str) -> str:
+
+def _cache_key(task: str, workspace: str) -> str:
+    """生成缓存 key：workspace + task 前 200 字符的 hash。"""
+    raw = f"{workspace}||{task[:200]}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def detect_mode_from_task(task: str, workspace: str, client=None) -> str:
     """根据任务描述 + 工作目录综合判断模式。
+
+    Q9 改进：如果提供了 LLM client，优先用 LLM 判断任务复杂度；
+    如果 LLM 调用失败或 client 不可用，回退到正则匹配。
 
     任务感知优先于文件数检测：
     - 任务明确提到 1-2 个具体文件 → single（即使工作目录有 100 个文件）
     - 任务提到"全部"/"整个项目"/"所有文件" → 用 workspace 检测
     - 任务描述模糊 → 用 workspace 检测
     """
+    # Q9: LLM 优先判断（有 client 时）
+    if client and task.strip():
+        llm_mode = _detect_mode_via_llm(task, workspace, client)
+        if llm_mode:
+            return llm_mode
+
+    # --- fallback: 正则匹配（原有逻辑） ---
     # 提取任务中提到的文件名（.py / .js / .ts 等）
     file_pattern = re.compile(r'\b([\w\-/]+\.(?:py|js|ts|tsx|jsx|go|rs|java|c|cpp|h|hpp|json|md|txt|yml|yaml|toml|cfg|ini))\b')
     mentioned = set()
@@ -79,6 +102,73 @@ def detect_mode_from_task(task: str, workspace: str) -> str:
 
     # 其他情况 → 用 workspace 检测
     return detect_mode(workspace)
+
+
+def _detect_mode_via_llm(task: str, workspace: str, client) -> str | None:
+    """Q9: 用 LLM 判断任务复杂度，替代正则。
+
+    返回 "single" / "multi"，如果 LLM 调用失败或超时则返回 None，触发 fallback。
+    结果会缓存，同 workspace + 相似 task 复用。
+    """
+    # 检查缓存
+    ck = _cache_key(task, workspace)
+    if ck in _llm_cache:
+        cached_mode, cached_time = _llm_cache[ck]
+        if time.time() - cached_time < 3600:  # 1 小时内有效
+            return cached_mode
+
+    # 获取静态 baseline
+    static_mode = detect_mode(workspace)
+    files, lines = _quick_stats(workspace)
+
+    prompt = (
+        "你是一个编程任务分析器。根据任务描述和项目概况，判断该任务适合哪种执行模式。\n\n"
+        f"任务描述：{task}\n\n"
+        f"项目概况：{files} 个源文件，约 {lines} 行代码，静态检测推荐 {static_mode.upper()} 模式\n\n"
+        "模式说明：\n"
+        "- single：单 Agent 模式，适合简单任务（改 1-2 个文件、修 bug、加小功能）\n"
+        "- multi：多 Agent 模式，适合复杂任务（跨模块重构、多文件修改、架构变更）\n\n"
+        "请只返回一个 JSON 对象，不要包含其他文字：\n"
+        '{"mode": "single"|"multi", "reason": "一句话理由", "estimated_files": 数字, "complexity": "low"|"medium"|"high"}'
+    )
+
+    try:
+        resp = client.chat(
+            [{"role": "user", "content": prompt}],
+            tools=None,  # 纯文本返回，不需要工具
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        # 提取 JSON（可能被 markdown 包裹）
+        if "```" in content:
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        result = json.loads(content)
+        mode = result.get("mode", static_mode)
+        if mode not in ("single", "multi"):
+            mode = static_mode
+        # 缓存结果
+        _llm_cache[ck] = (mode, time.time())
+        return mode
+    except (json.JSONDecodeError, KeyError, Exception):
+        # LLM 调用失败 → 返回 None，触发 fallback
+        return None
+
+
+def _quick_stats(workspace: str) -> tuple[int, int]:
+    """快速统计文件数和行数（用于 LLM 提示词）。"""
+    files = 0
+    lines = 0
+    for root, dirs, fnames in os.walk(workspace):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        for fname in fnames:
+            if Path(fname).suffix in _SOURCE_EXTS:
+                files += 1
+                try:
+                    lines += len((Path(root) / fname).read_text(encoding="utf-8", errors="replace").splitlines())
+                except OSError:
+                    pass
+    return files, lines
 
 
 def detect_mode(workspace: str) -> str:

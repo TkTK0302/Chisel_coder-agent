@@ -27,7 +27,10 @@ RISK_PATTERNS: list[tuple[re.Pattern, SecurityRisk, str, str]] = [
     # MEDIUM patterns before general HIGH rm -rf (specific patterns must come first)
     (re.compile(r"\brm\s+-rf?\s+.*__pycache__", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete __pycache__ directories", "cache cleanup"),
     (re.compile(r"\brm\s+-rf?\s+.*\.pytest_cache", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete .pytest_cache directories", "cache cleanup"),
+    (re.compile(r"\brm\s+-rf?\s+.*\.mypy_cache", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete .mypy_cache directories", "cache cleanup"),
+    (re.compile(r"\brm\s+-rf?\s+.*\.ruff_cache", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete .ruff_cache directories", "cache cleanup"),
     (re.compile(r"\brm\s+-rf?\s+.*\.pyc", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete .pyc files", "cache cleanup"),
+    (re.compile(r"\brm\s+-rf?\s+\.chisel", re.IGNORECASE), SecurityRisk.CRITICAL, "Delete .chisel agent data directory", "irreversible agent data loss"),
     (re.compile(r"\brm\s+-rf?\b", re.IGNORECASE), SecurityRisk.HIGH, "Recursively delete files or directories", "irreversible data loss"),
     (re.compile(r"\brm\s+-r\s", re.IGNORECASE), SecurityRisk.HIGH, "Recursively delete a directory", "data loss"),
     (re.compile(r"\brm\s+-f\s", re.IGNORECASE), SecurityRisk.MEDIUM, "Force delete a file", "file deletion"),
@@ -64,12 +67,17 @@ RISK_PATTERNS: list[tuple[re.Pattern, SecurityRisk, str, str]] = [
 _PROTECTED_PATTERNS = [
     (r"\.git[/\\]", ".git directory", "irreversible git history loss"),
     (r"\.git$", ".git directory", "irreversible git history loss"),
+    (r"\.chisel[/\\]", ".chisel directory", "agent data loss (checkpoints, audit, plans)"),
+    (r"\.chisel$", ".chisel directory", "agent data loss (checkpoints, audit, plans)"),
     (r"\.env[^.]*", ".env file", "API key and credential loss"),
     (r"\.pytest_cache[/\\]", ".pytest_cache directory", "test cache"),
     (r"\.pytest_cache$", ".pytest_cache directory", "test cache"),
+    (r"\.mypy_cache[/\\]", ".mypy_cache directory", "type check cache"),
+    (r"\.ruff_cache[/\\]", ".ruff_cache directory", "linter cache"),
     (r"\.vscode[/\\]", ".vscode directory", "IDE configuration loss"),
     (r"\.ssh[/\\]", ".ssh directory", "SSH key loss"),
     (r"\.gitignore", ".gitignore file", "git ignore rules loss"),
+    (r"\.dockerignore", ".dockerignore file", "docker ignore rules loss"),
 ]
 
 
@@ -118,6 +126,14 @@ _ABSOLUTE_SAFE_CMDS = {
     # 包管理器只读
     "pip list", "pip show", "pip freeze", "pip config",
     "npm list", "npm view", "npm outdated", "npm config",
+    "npx --help", "npx --version",
+    "pnpm list", "pnpm outdated", "pnpm --version",
+    "yarn list", "yarn outdated", "yarn --version",
+    # 编译工具只读
+    "rustc --version", "cargo --version", "cargo --list",
+    "go version", "go env", "go doc",
+    "gcc --version", "clang --version",
+    "make --version", "make --dry-run",
 }
 
 # 条件命令 —— 同一命令名有读写两种形态，需检查参数
@@ -193,6 +209,9 @@ def _is_absolutely_safe(command: str) -> bool:
 
     这些命令即使引用受保护路径（如 cat .env）也直接放行，
     因为它们只是读取/显示，不会删除或修改。
+
+    例外：如果命令引用了受保护路径（如 .env、.git），即使命令本身是只读的，
+    也不视为"绝对安全"——让后续级别判断是否需要用户确认（读取敏感文件也是风险）。
     """
     cmd = command.strip()
 
@@ -216,11 +235,18 @@ def _is_absolutely_safe(command: str) -> bool:
 
     # 精确匹配
     if base_cmd in _ABSOLUTE_SAFE_CMDS:
+        # 检查是否引用了受保护路径 —— 读取敏感文件也是风险
+        for pat, _, _ in _PROTECTED_PATTERNS:
+            if re.search(pat, cmd, re.IGNORECASE):
+                return False  # 不视为绝对安全，让后续级别处理
         return True
 
     # 前缀匹配（如 "git log", "docker ps"）
     for safe_cmd in _ABSOLUTE_SAFE_CMDS:
         if " " in safe_cmd and cmd.startswith(safe_cmd):
+            for pat, _, _ in _PROTECTED_PATTERNS:
+                if re.search(pat, cmd, re.IGNORECASE):
+                    return False
             return True
 
     return False
@@ -296,8 +322,14 @@ class SecurityAnalyzer:
         # 3) 受保护路径 —— 仅对能修改文件且非只读的命令检查
         #     rm -rf .env 走到这里 → CRITICAL
         #     必须在 Shell AST 和正则之前，否则 rm -rf . 会先匹配
+        #     区分：只读命令读敏感文件 → MEDIUM（泄露风险），写命令改敏感文件 → CRITICAL（破坏风险）
         for pat, reason, consequence in _PROTECTED_PATTERNS:
             if re.search(pat, command, re.IGNORECASE):
+                # 判断命令是只读还是可写
+                first_word = command.strip().split()[0] if command.strip().split() else ""
+                base_cmd = first_word.split("/")[-1] if "/" in first_word else first_word
+                if base_cmd in _ABSOLUTE_SAFE_CMDS:
+                    return SecurityRisk.MEDIUM, f"Reading sensitive file: {reason}", "data exposure risk"
                 return SecurityRisk.CRITICAL, f"Targets protected resource: {reason}", consequence
 
         # 4) Shell 语义分析（AST）—— 检测管道组合、破坏性命令
