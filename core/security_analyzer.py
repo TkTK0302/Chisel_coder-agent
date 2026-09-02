@@ -30,6 +30,8 @@ RISK_PATTERNS: list[tuple[re.Pattern, SecurityRisk, str, str]] = [
     (re.compile(r"\brm\s+-rf?\s+.*\.pyc", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete .pyc files", "cache cleanup"),
     (re.compile(r"\brm\s+-rf?\b", re.IGNORECASE), SecurityRisk.HIGH, "Recursively delete files or directories", "irreversible data loss"),
     (re.compile(r"\brm\s+-r\s", re.IGNORECASE), SecurityRisk.HIGH, "Recursively delete a directory", "data loss"),
+    (re.compile(r"\brm\s+-f\s", re.IGNORECASE), SecurityRisk.MEDIUM, "Force delete a file", "file deletion"),
+    (re.compile(r"\brm\s+[^-]", re.IGNORECASE), SecurityRisk.MEDIUM, "Delete a file", "file deletion"),
     # HIGH
     (re.compile(r"\bsudo\b", re.IGNORECASE), SecurityRisk.HIGH, "Execute command with superuser privileges", "privilege escalation"),
     (re.compile(r"\bchmod\s+-R\s*777\b", re.IGNORECASE), SecurityRisk.HIGH, "Make all files world-writable", "security vulnerability"),
@@ -158,6 +160,16 @@ def _split_by_shell_separators(cmd: str) -> list[str]:
             if current:
                 segments.append(''.join(current).strip())
                 current = []
+        elif ch == '|' and not in_single and not in_double:
+            # 检查是否是 || （两个连续的 |）
+            if i + 1 < len(cmd) and cmd[i + 1] == '|':
+                if current:
+                    segments.append(''.join(current).strip())
+                    current = []
+                i += 1  # 跳过第二个 |
+            else:
+                # 单个 | 是管道，保留在命令中
+                current.append(ch)
         elif ch == '&' and not in_single and not in_double:
             # 检查是否是 && （两个连续的 &）
             if i + 1 < len(cmd) and cmd[i + 1] == '&':
